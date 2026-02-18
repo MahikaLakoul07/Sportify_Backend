@@ -65,11 +65,20 @@ class LoginSerializer(serializers.Serializer):
     def validate(self, attrs):
         email = attrs.get('email')
         password = attrs.get('password')
-        user = authenticate(username=email, password=password)
-        if not user:
+
+        # Find user by email
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
             raise serializers.ValidationError("Invalid email or password")
+
+        # Check password
+        if not user.check_password(password):
+            raise serializers.ValidationError("Invalid email or password")
+
         attrs['user'] = user
         return attrs
+
 
 # Profile Serializer
 class ProfileSerializer(serializers.ModelSerializer):

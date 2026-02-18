@@ -17,13 +17,21 @@ class LoginView(generics.GenericAPIView):
     serializer_class = LoginSerializer
 
     def post(self, request, *args, **kwargs):
+        # Validate input
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+
+        # Get validated user
         user = serializer.validated_data['user']
+
+        # Generate JWT tokens
         refresh = RefreshToken.for_user(user)
+
+        # Return response
         return Response({
             "user": {
-                "id": user.id,
+                # IMPORTANT: use user_id not id (since you have custom PK)
+                "user_id": user.user_id,
                 "username": user.username,
                 "email": user.email,
                 "user_type": user.user_type
