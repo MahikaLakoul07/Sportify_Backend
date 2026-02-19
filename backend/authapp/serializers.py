@@ -1,88 +1,64 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model, authenticate
-from django.contrib.auth.password_validation import validate_password
+from rest_framework_simplejwt.tokens import RefreshToken
 
 User = get_user_model()
 
-# Registration Serializer
-from rest_framework import serializers
-from django.contrib.auth.password_validation import validate_password
-from .models import User
 
 class RegisterSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True, required=True, validators=[validate_password])
-    confirm_password = serializers.CharField(write_only=True, required=True)
-
-    # Allow frontend to send role_name (player/owner) like your Postman
-    role_name = serializers.CharField(write_only=True, required=False)
+    password = serializers.CharField(write_only=True, min_length=6)
 
     class Meta:
         model = User
-        # Keep user_type in fields so backend can store it
-        # Add role_name so frontend can send it too
-        fields = ['username', 'email', 'gender', 'password', 'confirm_password', 'user_type', 'role_name']
-
-    def validate(self, attrs):
-        # 1) Password match check
-        if attrs['password'] != attrs['confirm_password']:
-            raise serializers.ValidationError({"password": "Password fields didn't match."})
-
-        # 2) Accept user_type OR role_name and normalize
-        role_name = attrs.get("role_name")
-        user_type = attrs.get("user_type")
-
-        # If role_name is provided (from frontend), convert it to UserType enum
-        if role_name:
-            role_name = str(role_name).strip().lower()
-            if role_name == "player":
-                attrs["user_type"] = User.UserType.PLAYER
-            elif role_name == "owner":
-                attrs["user_type"] = User.UserType.OWNER
-            else:
-                raise serializers.ValidationError({"role_name": "Role must be either 'player' or 'owner'."})
-
-        # If user_type is provided directly, validate it
-        if attrs.get("user_type") not in [User.UserType.PLAYER, User.UserType.OWNER]:
-            raise serializers.ValidationError({"user_type": "User type must be PLAYER or OWNER."})
-
-        return attrs
+        fields = [
+            "user_id",
+            "username",
+            "email",
+            "phone",
+            "password",
+            "user_type",
+            "gender",
+        ]
+        read_only_fields = ["user_id"]
 
     def create(self, validated_data):
-        # remove confirm_password because it is not part of User model
-        validated_data.pop('confirm_password', None)
-
-        # remove role_name because it's not part of User model
-        validated_data.pop('role_name', None)
-
-        user = User.objects.create_user(**validated_data)
+        password = validated_data.pop("password")
+        user = User(**validated_data)
+        user.set_password(password)
+        user.save()
         return user
 
-# Login Serializer
+
 class LoginSerializer(serializers.Serializer):
-    email = serializers.EmailField(required=True)
-    password = serializers.CharField(required=True, write_only=True)
+    email = serializers.EmailField()
+    password = serializers.CharField(write_only=True)
 
-    def validate(self, attrs):
-        email = attrs.get('email')
-        password = attrs.get('password')
+    def validate(self, data):
+        email = data.get("email")
+        password = data.get("password")
 
-        # Find user by email
         try:
-            user = User.objects.get(email=email)
+            user_obj = User.objects.get(email=email)
         except User.DoesNotExist:
-            raise serializers.ValidationError("Invalid email or password")
+            raise serializers.ValidationError("Invalid credentials")
 
-        # Check password
-        if not user.check_password(password):
-            raise serializers.ValidationError("Invalid email or password")
+        user = authenticate(username=user_obj.username, password=password)
 
-        attrs['user'] = user
-        return attrs
+        if not user:
+            raise serializers.ValidationError("Invalid credentials")
+
+        data["user"] = user
+        return data
 
 
-# Profile Serializer
 class ProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'gender', 'user_type']
-        read_only_fields = ['id', 'email', 'user_type']
+        fields = [
+            "user_id",
+            "username",
+            "email",
+            "phone",
+            "gender",
+            "user_type",
+        ]
