@@ -1,47 +1,22 @@
-# Python
+# Python cache
 __pycache__/
-*.py[cod]
-*$py.class
+*.pyc
+*.pyo
 
-# Django
-*.log
-db.sqlite3
-media/
-
-# Virtual environments
-venv/
-.env/
+# Virtual environment
 .venv/
+venv/
 env/
 
-# VS Code
-.vscode/
+# Django static/media
+staticfiles/
+media/
 
-# PyCharm
-.idea/
-
-# macOS
-.DS_Store
-
-# Windows
-Thumbs.db
-
-# Environment variables
+# Environment / secrets
 .env
 
-# Migrations (optional, usually keep them)
-# */migrations/*
-# !*/migrations/__init__.py
+# Ignore all MinIO data
+minio-data/
 
-# Node (if frontend in same repo)
-node_modules/
-dist/
-build/
-
-# Coverage
-htmlcov/
-.coverage
-coverage.xml
-
-# mypy
-.mypy_cache/
+# Logs
+*.log
