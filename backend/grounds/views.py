@@ -1,26 +1,38 @@
-from rest_framework import generics, permissions
+# grounds/views.py
+from rest_framework import viewsets, permissions
 from rest_framework.parsers import MultiPartParser, FormParser
+
 from .models import Ground
-from .serializers import GroundSerializer
+from .serializers import GroundCreateSerializer, GroundListSerializer, GroundDetailSerializer
 
 
-class GroundListCreateView(generics.ListCreateAPIView):
-    serializer_class = GroundSerializer
-    parser_classes = [MultiPartParser, FormParser]  # ✅ IMPORTANT for image uploads
+class GroundViewSet(viewsets.ModelViewSet):
+    queryset = Ground.objects.all().order_by("-created_at")
+    parser_classes = (MultiPartParser, FormParser)  # needed for FormData + image uploads [web:16]
+
+    def get_permissions(self):
+        # Anyone can read approved grounds; only logged-in users can create/update their own
+        if self.action in ["create", "update", "partial_update", "destroy", "my"]:
+            return [permissions.IsAuthenticated()]
+        return [permissions.AllowAny()]
+
+    def get_serializer_class(self):
+        if self.action == "create":
+            return GroundCreateSerializer
+        if self.action == "list":
+            return GroundListSerializer
+        return GroundDetailSerializer
 
     def get_queryset(self):
-        # Players see only APPROVED grounds
-        return Ground.objects.filter(status="APPROVED").order_by("-created_at")
+        qs = super().get_queryset()
+
+        # For public list: show only approved
+        if self.action in ["list", "retrieve"]:
+            return qs.filter(status=Ground.Status.APPROVED)
+
+        # For authenticated actions: you can restrict later if needed
+        return qs
 
     def perform_create(self, serializer):
-        # Only logged-in users can create
-        # Owner set automatically
-        serializer.save(owner=self.request.user, status="PENDING")
-
-
-class GroundDetailView(generics.RetrieveAPIView):
-    serializer_class = GroundSerializer
-
-    def get_queryset(self):
-        # Ground detail only if APPROVED (matches your requirement)
-        return Ground.objects.filter(status="APPROVED")
+        # Attach logged-in user as owner, force status=PENDING
+        serializer.save(owner=self.request.user, status=Ground.Status.PENDING)
