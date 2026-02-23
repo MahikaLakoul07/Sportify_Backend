@@ -40,6 +40,8 @@ INSTALLED_APPS = [
 
     # Local apps
     'authapp',
+
+    'grounds',
 ]
 
 MIDDLEWARE = [
