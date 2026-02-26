@@ -46,7 +46,7 @@ class GroundListSerializer(serializers.ModelSerializer):
 
 class GroundDetailSerializer(serializers.ModelSerializer):
     image_url = serializers.SerializerMethodField()
-    owner_id = serializers.IntegerField(source="owner_id", read_only=True)
+    owner_id = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = Ground

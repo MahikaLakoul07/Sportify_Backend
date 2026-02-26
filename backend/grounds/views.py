@@ -1,18 +1,21 @@
-# grounds/views.py
-from rest_framework import viewsets, permissions, status
-from rest_framework.parsers import MultiPartParser, FormParser
+from django.db import transaction
+from django.shortcuts import get_object_or_404
+from django.utils.dateparse import parse_date
+
+from rest_framework import permissions, status, viewsets
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from django.shortcuts import get_object_or_404
-from django.db import transaction
 
+from bookings.models import Booking
 from .models import Ground, GroundAvailability
 from .serializers import (
-    GroundCreateSerializer,
-    GroundListSerializer,
-    GroundDetailSerializer,
     AvailabilityBulkUpsertSerializer,
+    GroundCreateSerializer,
+    GroundDetailSerializer,
+    GroundListSerializer,
 )
+from .slot_constants import FIXED_SLOTS
 
 
 class GroundViewSet(viewsets.ModelViewSet):
@@ -90,3 +93,85 @@ class GroundAvailabilityBulkUpsertView(APIView):
             GroundAvailability.objects.bulk_create(to_create)
 
         return Response({"detail": "Availability saved successfully."}, status=status.HTTP_200_OK)
+class GroundSlotsForDateView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, pk):
+        ground = get_object_or_404(Ground, pk=pk, status=Ground.Status.APPROVED)
+
+        date_str = request.query_params.get("date")
+        d = parse_date(date_str) if date_str else None
+        if not d:
+            return Response({"detail": "date=YYYY-MM-DD is required"}, status=400)
+
+        dow = d.weekday()
+
+        windows = list(GroundAvailability.objects.filter(ground=ground, day_of_week=dow))
+
+        def within_availability(s, e):
+            if not windows:
+                return True
+            return any(w.start_time <= s and e <= w.end_time for w in windows)
+
+        booked = set(
+            Booking.objects.filter(
+                ground=ground,
+                date=d,
+                status=Booking.Status.BOOKED,
+            ).values_list("start_time", "end_time")
+        )
+
+        slots = []
+        for s, e in FIXED_SLOTS:
+            open_ = within_availability(s, e)
+            is_booked = (s, e) in booked
+            slots.append(
+                {
+                    "start_time": s.strftime("%H:%M"),
+                    "end_time": e.strftime("%H:%M"),
+                    "booked": bool(is_booked),
+                    "available": bool(open_ and not is_booked),
+                }
+            )
+
+        return Response({"ground_id": ground.id, "date": date_str, "slots": slots}, status=200)
+
+    permission_classes = [permissions.AllowAny]
+
+    # GET /api/grounds/<id>/slots/?date=YYYY-MM-DD
+    def get(self, request, pk):
+        ground = get_object_or_404(Ground, pk=pk, status=Ground.Status.APPROVED)
+
+        date_str = request.query_params.get("date")
+        d = parse_date(date_str) if date_str else None
+        if not d:
+            return Response({"detail": "date=YYYY-MM-DD is required"}, status=400)
+
+        dow = d.weekday()
+
+        # weekly availability windows (if none set => treat as fully open)
+        windows = list(GroundAvailability.objects.filter(ground=ground, day_of_week=dow))
+
+        def within_availability(s, e):
+            if not windows:
+                return True
+            return any(w.start_time <= s and e <= w.end_time for w in windows)
+
+        booked = set(
+            Booking.objects.filter(
+                ground=ground, date=d, status=Booking.Status.BOOKED
+            ).values_list("start_time", "end_time")
+        )
+
+        slots = []
+        for s, e in FIXED_SLOTS:
+            open_ = within_availability(s, e)
+            is_booked = (s, e) in booked
+            slots.append({
+                "start_time": s.strftime("%H:%M"),
+                "end_time": e.strftime("%H:%M"),
+                "booked": bool(is_booked),
+                "available": bool(open_ and not is_booked),
+            })
+
+        return Response({"ground_id": ground.id, "date": date_str, "slots": slots})
