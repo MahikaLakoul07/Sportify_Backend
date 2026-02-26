@@ -42,6 +42,7 @@ INSTALLED_APPS = [
     'authapp',
     'grounds',
     'bookings',
+    'payments',
 ]
 
 MIDDLEWARE = [
@@ -182,3 +183,11 @@ EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
 # =========================
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+ESEWA_PRODUCT_CODE = os.environ["ESEWA_PRODUCT_CODE"]
+ESEWA_SECRET_KEY = os.environ["ESEWA_SECRET_KEY"]
+ESEWA_FORM_URL = os.environ["ESEWA_FORM_URL"]
+ESEWA_STATUS_URL = os.environ["ESEWA_STATUS_URL"]
+ESEWA_SUCCESS_URL = os.environ["ESEWA_SUCCESS_URL"]
+ESEWA_FAILURE_URL = os.environ["ESEWA_FAILURE_URL"]
+FRONTEND_BASE_URL = os.environ["FRONTEND_BASE_URL"]

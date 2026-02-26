@@ -117,7 +117,7 @@ class GroundSlotsForDateView(APIView):
             Booking.objects.filter(
                 ground=ground,
                 date=d,
-                status=Booking.Status.BOOKED,
+                status__in=[Booking.Status.PENDING, Booking.Status.BOOKED],
             ).values_list("start_time", "end_time")
         )
 

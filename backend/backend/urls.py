@@ -24,6 +24,7 @@ urlpatterns = [
     path('authapp/', include('authapp.urls')),
     path("api/", include("grounds.urls")),
     path("api/", include("bookings.urls")),
+    path("api/payments/", include("payments.urls")),
 ]
 
 if settings.DEBUG:
