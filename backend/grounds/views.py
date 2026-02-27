@@ -1,4 +1,5 @@
 from django.db import transaction
+from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_date
 
@@ -37,8 +38,81 @@ class GroundViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         qs = super().get_queryset()
 
+        # Public endpoints only show approved grounds
         if self.action in ["list", "retrieve"]:
-            return qs.filter(status=Ground.Status.APPROVED)
+            qs = qs.filter(status=Ground.Status.APPROVED)
+
+        # -----------------------------
+        # FILTERS (search, max_price, date)
+        # -----------------------------
+        params = self.request.query_params
+
+        search = (params.get("search") or "").strip()
+        max_price = (params.get("max_price") or "").strip()
+        date_str = (params.get("date") or "").strip()
+
+        # 1) Search by name/location
+        if search:
+            qs = qs.filter(Q(name__icontains=search) | Q(location__icontains=search))
+
+        # 2) Max price
+        if max_price:
+            try:
+                qs = qs.filter(price_per_hour__lte=int(max_price))
+            except ValueError:
+                pass  # ignore bad input
+
+        # 3) Date filter: only grounds that have at least ONE available slot that day
+        if date_str:
+            d = parse_date(date_str)
+            if d:
+                dow = d.weekday()
+                keep_ids = []
+
+                # NOTE: this loops grounds; fine for small projects
+                for g in qs:
+                    windows = list(
+                        GroundAvailability.objects.filter(ground=g, day_of_week=dow)
+                    )
+
+                    # helper: check if fixed slot is inside any availability window
+                    def slot_open(start_str, end_str):
+                        if not windows:
+                            return True  # no windows => fully open (your logic)
+                        for w in windows:
+                            w_start = w.start_time.strftime("%H:%M")
+                            w_end = w.end_time.strftime("%H:%M")
+                            if w_start <= start_str and end_str <= w_end:
+                                return True
+                        return False
+
+                    # booked keys for that date
+                    booked_pairs = Booking.objects.filter(
+                        ground=g,
+                        date=d,
+                        status__in=[Booking.Status.BOOKED, Booking.Status.PENDING],
+                    ).values_list("start_time", "end_time")
+
+                    booked_keys = set(
+                        f"{s.strftime('%H:%M')}-{e.strftime('%H:%M')}"
+                        for (s, e) in booked_pairs
+                    )
+
+                    # find at least one available slot
+                    found_available = False
+                    for s, e in FIXED_SLOTS:
+                        start_str = s.strftime("%H:%M") if hasattr(s, "strftime") else str(s)[:5]
+                        end_str = e.strftime("%H:%M") if hasattr(e, "strftime") else str(e)[:5]
+                        key = f"{start_str}-{end_str}"
+
+                        if slot_open(start_str, end_str) and key not in booked_keys:
+                            found_available = True
+                            break
+
+                    if found_available:
+                        keep_ids.append(g.id)
+
+                qs = qs.filter(id__in=keep_ids)
 
         return qs
 
@@ -47,23 +121,11 @@ class GroundViewSet(viewsets.ModelViewSet):
 
 
 class GroundAvailabilityBulkUpsertView(APIView):
-    """
-    POST /api/grounds/<id>/availability/bulk/
-    Body:
-    {
-      "availability": [
-        {"day_of_week": 6, "windows": [{"start_time":"07:00","end_time":"08:00"}]},
-        {"day_of_week": 0, "windows": [{"start_time":"08:00","end_time":"10:00"}]}
-      ]
-    }
-    """
-
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk):
         ground = get_object_or_404(Ground, pk=pk)
 
-        # ✅ owner-only
         if ground.owner_id != request.user.pk:
             return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
 
@@ -72,10 +134,11 @@ class GroundAvailabilityBulkUpsertView(APIView):
 
         data = serializer.validated_data["availability"]
 
-        # Replace per day (delete old windows for those days)
         with transaction.atomic():
             days = [d["day_of_week"] for d in data]
-            GroundAvailability.objects.filter(ground=ground, day_of_week__in=days).delete()
+            GroundAvailability.objects.filter(
+                ground=ground, day_of_week__in=days
+            ).delete()
 
             to_create = []
             for d in data:
@@ -93,6 +156,8 @@ class GroundAvailabilityBulkUpsertView(APIView):
             GroundAvailability.objects.bulk_create(to_create)
 
         return Response({"detail": "Availability saved successfully."}, status=status.HTTP_200_OK)
+
+
 class GroundSlotsForDateView(APIView):
     permission_classes = [permissions.AllowAny]
 
@@ -108,70 +173,40 @@ class GroundSlotsForDateView(APIView):
 
         windows = list(GroundAvailability.objects.filter(ground=ground, day_of_week=dow))
 
-        def within_availability(s, e):
+        def within_availability(start_str, end_str):
             if not windows:
                 return True
-            return any(w.start_time <= s and e <= w.end_time for w in windows)
+            for w in windows:
+                w_start = w.start_time.strftime("%H:%M")
+                w_end = w.end_time.strftime("%H:%M")
+                if w_start <= start_str and end_str <= w_end:
+                    return True
+            return False
 
-        booked = set(
-            Booking.objects.filter(
-                ground=ground,
-                date=d,
-                status__in=[Booking.Status.PENDING, Booking.Status.BOOKED],
-            ).values_list("start_time", "end_time")
+        booked_pairs = Booking.objects.filter(
+            ground=ground,
+            date=d,
+            status__in=[Booking.Status.BOOKED, Booking.Status.PENDING],
+        ).values_list("start_time", "end_time")
+
+        booked_keys = set(
+            f"{s.strftime('%H:%M')}-{e.strftime('%H:%M')}" for (s, e) in booked_pairs
         )
 
         slots = []
         for s, e in FIXED_SLOTS:
-            open_ = within_availability(s, e)
-            is_booked = (s, e) in booked
-            slots.append(
-                {
-                    "start_time": s.strftime("%H:%M"),
-                    "end_time": e.strftime("%H:%M"),
-                    "booked": bool(is_booked),
-                    "available": bool(open_ and not is_booked),
-                }
-            )
+            start_str = s.strftime("%H:%M") if hasattr(s, "strftime") else str(s)[:5]
+            end_str = e.strftime("%H:%M") if hasattr(e, "strftime") else str(e)[:5]
 
-        return Response({"ground_id": ground.id, "date": date_str, "slots": slots}, status=200)
+            key = f"{start_str}-{end_str}"
+            open_ = within_availability(start_str, end_str)
+            is_booked = key in booked_keys
 
-    permission_classes = [permissions.AllowAny]
-
-    # GET /api/grounds/<id>/slots/?date=YYYY-MM-DD
-    def get(self, request, pk):
-        ground = get_object_or_404(Ground, pk=pk, status=Ground.Status.APPROVED)
-
-        date_str = request.query_params.get("date")
-        d = parse_date(date_str) if date_str else None
-        if not d:
-            return Response({"detail": "date=YYYY-MM-DD is required"}, status=400)
-
-        dow = d.weekday()
-
-        # weekly availability windows (if none set => treat as fully open)
-        windows = list(GroundAvailability.objects.filter(ground=ground, day_of_week=dow))
-
-        def within_availability(s, e):
-            if not windows:
-                return True
-            return any(w.start_time <= s and e <= w.end_time for w in windows)
-
-        booked = set(
-            Booking.objects.filter(
-                ground=ground, date=d, status=Booking.Status.BOOKED
-            ).values_list("start_time", "end_time")
-        )
-
-        slots = []
-        for s, e in FIXED_SLOTS:
-            open_ = within_availability(s, e)
-            is_booked = (s, e) in booked
             slots.append({
-                "start_time": s.strftime("%H:%M"),
-                "end_time": e.strftime("%H:%M"),
+                "start_time": start_str,
+                "end_time": end_str,
                 "booked": bool(is_booked),
                 "available": bool(open_ and not is_booked),
             })
 
-        return Response({"ground_id": ground.id, "date": date_str, "slots": slots})
+        return Response({"ground_id": ground.id, "date": date_str, "slots": slots}, status=200)
