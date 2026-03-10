@@ -1,7 +1,8 @@
 import uuid
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
+from django.core.cache import cache
 from django.http import HttpResponseRedirect
 from django.utils.dateparse import parse_date, parse_time
 
@@ -20,8 +21,39 @@ from .utils import (
 )
 
 
-def is_fixed_slot(start_time, end_time):
-    return any(s == start_time and e == end_time for (s, e) in FIXED_SLOTS)
+CACHE_TIMEOUT_SECONDS = 60 * 30  # 30 minutes
+
+
+def is_valid_multi_slot(start_time, end_time):
+    """
+    Allow 1 to 5 consecutive fixed slots.
+
+    Examples:
+    06:00 -> 07:00 = valid
+    06:00 -> 08:00 = valid
+    10:00 -> 15:00 = valid
+    10:00 -> 16:00 = invalid
+    """
+    slots = list(FIXED_SLOTS)
+
+    start_indexes = [i for i, (s, _) in enumerate(slots) if s == start_time]
+    end_indexes = [i for i, (_, e) in enumerate(slots) if e == end_time]
+
+    if not start_indexes or not end_indexes:
+        return False
+
+    start_idx = start_indexes[0]
+    end_idx = end_indexes[0]
+
+    if end_idx < start_idx:
+        return False
+
+    slot_count = end_idx - start_idx + 1
+    return 1 <= slot_count <= 5
+
+
+def payment_cache_key(tx_uuid: str) -> str:
+    return f"esewa_booking_intent:{tx_uuid}"
 
 
 class EsewaInitiateView(APIView):
@@ -33,6 +65,11 @@ class EsewaInitiateView(APIView):
         start_str = request.data.get("start_time")
         end_str = request.data.get("end_time")
         total_amount = request.data.get("total_amount")
+
+        booking_type = request.data.get("booking_type", Booking.BookingType.CLOSED)
+        required_players = request.data.get("required_players", 1)
+        open_game_note = request.data.get("open_game_note", "")
+        needed_positions = request.data.get("needed_positions", [])
 
         try:
             ground = Ground.objects.get(
@@ -49,29 +86,66 @@ class EsewaInitiateView(APIView):
         if not (d and start_t and end_t):
             return Response({"detail": "Invalid date/time"}, status=400)
 
-        if not is_fixed_slot(start_t, end_t):
+        # changed: allow 1 to 5 consecutive slots
+        if not is_valid_multi_slot(start_t, end_t):
             return Response({"detail": "Invalid slot"}, status=400)
+
+        if booking_type not in [Booking.BookingType.OPEN, Booking.BookingType.CLOSED]:
+            return Response({"detail": "Invalid booking type."}, status=400)
+
+        try:
+            required_players = int(required_players)
+        except (TypeError, ValueError):
+            return Response({"detail": "Invalid required players."}, status=400)
+
+        if booking_type == Booking.BookingType.OPEN:
+            if required_players < 1:
+                return Response({"detail": "Required players must be at least 1."}, status=400)
+        else:
+            required_players = 1
+            open_game_note = ""
+            needed_positions = []
+
+        try:
+            total_amount = Decimal(str(total_amount))
+            if total_amount <= 0:
+                return Response({"detail": "Invalid total amount."}, status=400)
+        except (InvalidOperation, TypeError, ValueError):
+            return Response({"detail": "Invalid total amount."}, status=400)
+
+        # changed: overlap check for multi-slot booking
+        overlap = Booking.objects.filter(
+            ground=ground,
+            date=d,
+            status=Booking.Status.BOOKED,
+            start_time__lt=end_t,
+            end_time__gt=start_t,
+        ).exists()
+
+        if overlap:
+            return Response({"detail": "Slot already booked."}, status=400)
 
         transaction_uuid = str(uuid.uuid4())
 
-        try:
-            booking = Booking.objects.create(
-                ground=ground,
-                date=d,
-                start_time=start_t,
-                end_time=end_t,
-                player=request.user,
-                created_by=request.user,
-                source=Booking.Source.ONLINE,
-                status=Booking.Status.PENDING,
-                transaction_uuid=transaction_uuid,
-            )
-        except Exception:
-            return Response({"detail": "Slot already booked."}, status=400)
+        cache.set(
+            payment_cache_key(transaction_uuid),
+            {
+                "ground_id": ground.pk,
+                "date": date_str,
+                "start_time": start_str,
+                "end_time": end_str,
+                "user_id": request.user.pk,
+                "booking_type": booking_type,
+                "required_players": required_players,
+                "open_game_note": open_game_note,
+                "needed_positions": needed_positions,
+                "total_amount": str(total_amount),
+            },
+            timeout=CACHE_TIMEOUT_SECONDS,
+        )
 
         product_code = settings.ESEWA_PRODUCT_CODE
         secret = settings.ESEWA_SECRET_KEY
-
         signed_field_names = "total_amount,transaction_uuid,product_code"
 
         signature = esewa_make_signature(
@@ -99,7 +173,6 @@ class EsewaInitiateView(APIView):
             {
                 "action_url": settings.ESEWA_FORM_URL,
                 "fields": fields,
-                "booking_id": booking.id,
             },
             status=200,
         )
@@ -145,19 +218,74 @@ class EsewaSuccessView(APIView):
                 f"{settings.FRONTEND_BASE_URL}/mybookings?payment=failure"
             )
 
-        try:
-            booking = Booking.objects.get(transaction_uuid=transaction_uuid)
-            booking.status = Booking.Status.BOOKED
-            booking.transaction_code = transaction_code
-            booking.paid_amount = Decimal(total_amount)
-            booking.save()
-        except Booking.DoesNotExist:
+        intent = cache.get(payment_cache_key(transaction_uuid))
+        if not intent:
             return HttpResponseRedirect(
                 f"{settings.FRONTEND_BASE_URL}/mybookings?payment=failure"
             )
 
+        try:
+            ground = Ground.objects.get(
+                pk=intent["ground_id"],
+                status=Ground.Status.APPROVED
+            )
+        except Ground.DoesNotExist:
+            cache.delete(payment_cache_key(transaction_uuid))
+            return HttpResponseRedirect(
+                f"{settings.FRONTEND_BASE_URL}/mybookings?payment=failure"
+            )
+
+        d = parse_date(intent["date"])
+        start_t = parse_time(intent["start_time"])
+        end_t = parse_time(intent["end_time"])
+        user_id = intent["user_id"]
+        booking_type = intent["booking_type"]
+        required_players = int(intent["required_players"])
+        open_game_note = intent["open_game_note"]
+
+        # changed: overlap re-check at payment success time
+        overlap = Booking.objects.filter(
+            ground=ground,
+            date=d,
+            status=Booking.Status.BOOKED,
+            start_time__lt=end_t,
+            end_time__gt=start_t,
+        ).exists()
+
+        if overlap:
+            cache.delete(payment_cache_key(transaction_uuid))
+            return HttpResponseRedirect(
+                f"{settings.FRONTEND_BASE_URL}/mybookings?payment=slot_taken"
+            )
+
+        try:
+            booking = Booking.objects.create(
+                ground=ground,
+                date=d,
+                start_time=start_t,
+                end_time=end_t,
+                player_id=user_id,
+                created_by_id=user_id,
+                source=Booking.Source.ONLINE,
+                status=Booking.Status.BOOKED,
+                booking_type=booking_type,
+                current_players=1,
+                required_players=required_players if booking_type == Booking.BookingType.OPEN else 1,
+                open_game_note=open_game_note if booking_type == Booking.BookingType.OPEN else "",
+                transaction_uuid=transaction_uuid,
+                transaction_code=transaction_code,
+                paid_amount=Decimal(total_amount),
+            )
+        except Exception:
+            cache.delete(payment_cache_key(transaction_uuid))
+            return HttpResponseRedirect(
+                f"{settings.FRONTEND_BASE_URL}/mybookings?payment=failure"
+            )
+
+        cache.delete(payment_cache_key(transaction_uuid))
+
         return HttpResponseRedirect(
-            f"{settings.FRONTEND_BASE_URL}/mybookings/{booking.id}?payment=success&tx={transaction_uuid}"
+            f"{settings.FRONTEND_BASE_URL}/mybookings?payment=success&booking_id={booking.pk}&tx={transaction_uuid}"
         )
 
 
