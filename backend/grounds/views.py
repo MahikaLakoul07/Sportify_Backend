@@ -24,7 +24,7 @@ class GroundViewSet(viewsets.ModelViewSet):
     parser_classes = (MultiPartParser, FormParser)
 
     def get_permissions(self):
-        if self.action in ["create", "update", "partial_update", "destroy", "my"]:
+        if self.action in ["create", "update", "partial_update", "destroy"]:
             return [permissions.IsAuthenticated()]
         return [permissions.AllowAny()]
 
@@ -38,8 +38,13 @@ class GroundViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         qs = super().get_queryset()
 
+        # Public users only see approved grounds
         if self.action in ["list", "retrieve"]:
             qs = qs.filter(status=Ground.Status.APPROVED)
+
+        # Owner can only update/delete own grounds
+        if self.action in ["update", "partial_update", "destroy"]:
+            qs = qs.filter(owner=self.request.user)
 
         params = self.request.query_params
         search = (params.get("search") or "").strip()
@@ -105,7 +110,27 @@ class GroundViewSet(viewsets.ModelViewSet):
         return qs
 
     def perform_create(self, serializer):
+        # This automatically stores request.user.user_id inside Ground.owner_id
         serializer.save(owner=self.request.user, status=Ground.Status.PENDING)
+
+
+class OwnerMyGroundsView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        if request.user.user_type != "owner":
+            return Response(
+                {"detail": "Only owners can view their grounds."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        grounds = Ground.objects.filter(owner=request.user).order_by("-created_at")
+        serializer = GroundDetailSerializer(
+            grounds,
+            many=True,
+            context={"request": request},
+        )
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 class GroundAvailabilityBulkUpsertView(APIView):
@@ -114,7 +139,7 @@ class GroundAvailabilityBulkUpsertView(APIView):
     def post(self, request, pk):
         ground = get_object_or_404(Ground, pk=pk)
 
-        if ground.owner_id != request.user.pk:
+        if ground.owner_id != request.user.user_id:
             return Response(
                 {"detail": "Not allowed."},
                 status=status.HTTP_403_FORBIDDEN
