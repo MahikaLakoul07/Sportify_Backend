@@ -27,12 +27,6 @@ CACHE_TIMEOUT_SECONDS = 60 * 30  # 30 minutes
 def is_valid_multi_slot(start_time, end_time):
     """
     Allow 1 to 5 consecutive fixed slots.
-
-    Examples:
-    06:00 -> 07:00 = valid
-    06:00 -> 08:00 = valid
-    10:00 -> 15:00 = valid
-    10:00 -> 16:00 = invalid
     """
     slots = list(FIXED_SLOTS)
 
@@ -86,7 +80,6 @@ class EsewaInitiateView(APIView):
         if not (d and start_t and end_t):
             return Response({"detail": "Invalid date/time"}, status=400)
 
-        # changed: allow 1 to 5 consecutive slots
         if not is_valid_multi_slot(start_t, end_t):
             return Response({"detail": "Invalid slot"}, status=400)
 
@@ -113,7 +106,6 @@ class EsewaInitiateView(APIView):
         except (InvalidOperation, TypeError, ValueError):
             return Response({"detail": "Invalid total amount."}, status=400)
 
-        # changed: overlap check for multi-slot booking
         overlap = Booking.objects.filter(
             ground=ground,
             date=d,
@@ -243,7 +235,6 @@ class EsewaSuccessView(APIView):
         required_players = int(intent["required_players"])
         open_game_note = intent["open_game_note"]
 
-        # changed: overlap re-check at payment success time
         overlap = Booking.objects.filter(
             ground=ground,
             date=d,
@@ -276,7 +267,8 @@ class EsewaSuccessView(APIView):
                 transaction_code=transaction_code,
                 paid_amount=Decimal(total_amount),
             )
-        except Exception:
+        except Exception as e:
+            print("Booking create error:", str(e))
             cache.delete(payment_cache_key(transaction_uuid))
             return HttpResponseRedirect(
                 f"{settings.FRONTEND_BASE_URL}/mybookings?payment=failure"

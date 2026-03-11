@@ -15,8 +15,13 @@ class BookingViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        return Booking.objects.select_related("ground", "created_by").order_by("-created_at")
-
+        return (
+            Booking.objects
+            .select_related("ground", "created_by")
+            .filter(player=self.request.user)
+            .order_by("-created_at")
+        )
+    
     def get_serializer_class(self):
         if self.action == "create":
             return BookingCreateSerializer
