@@ -21,28 +21,38 @@ class BookingViewSet(viewsets.ModelViewSet):
             .filter(player=self.request.user)
             .order_by("-created_at")
         )
-    
+
     def get_serializer_class(self):
         if self.action == "create":
             return BookingCreateSerializer
         return BookingSerializer
 
     def list(self, request, *args, **kwargs):
-        qs = self.get_queryset().filter(player=request.user)
+        qs = self.get_queryset()
         ser = BookingSerializer(qs, many=True, context={"request": request})
         return Response(ser.data)
 
     @action(detail=False, methods=["get"], url_path="my")
     def my(self, request):
-        qs = self.get_queryset().filter(player=request.user)
+        qs = self.get_queryset()
         ser = BookingSerializer(qs, many=True, context={"request": request})
         return Response(ser.data)
 
-    @action(detail=False, methods=["get"], url_path="open-games", permission_classes=[permissions.AllowAny])
+    @action(
+        detail=False,
+        methods=["get"],
+        url_path="open-games",
+        permission_classes=[permissions.AllowAny],
+    )
     def open_games(self, request):
-        qs = self.get_queryset().filter(
-            booking_type=Booking.BookingType.OPEN,
-            status=Booking.Status.BOOKED,
+        qs = (
+            Booking.objects
+            .select_related("ground", "created_by")
+            .filter(
+                booking_type=Booking.BookingType.OPEN,
+                status=Booking.Status.BOOKED,
+            )
+            .order_by("date", "start_time")
         )
 
         today_only = request.query_params.get("today")
