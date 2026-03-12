@@ -78,9 +78,17 @@ class BookingSerializer(serializers.ModelSerializer):
     ground_name = serializers.CharField(source="ground.name", read_only=True)
     location = serializers.CharField(source="ground.location", read_only=True)
     ground_phone = serializers.CharField(source="ground.phone", read_only=True)
+    ground_price_per_hour = serializers.DecimalField(
+        source="ground.price_per_hour",
+        max_digits=10,
+        decimal_places=2,
+        read_only=True
+    )
     ground_image_url = serializers.SerializerMethodField()
     spots_left = serializers.ReadOnlyField()
     is_open_joinable = serializers.ReadOnlyField()
+    total_amount = serializers.SerializerMethodField()
+    remaining_amount = serializers.SerializerMethodField()
 
     class Meta:
         model = Booking
@@ -90,6 +98,7 @@ class BookingSerializer(serializers.ModelSerializer):
             "ground_name",
             "location",
             "ground_phone",
+            "ground_price_per_hour",
             "ground_image_url",
             "date",
             "start_time",
@@ -105,6 +114,8 @@ class BookingSerializer(serializers.ModelSerializer):
             "transaction_uuid",
             "transaction_code",
             "paid_amount",
+            "total_amount",
+            "remaining_amount",
             "created_at",
         ]
 
@@ -116,6 +127,34 @@ class BookingSerializer(serializers.ModelSerializer):
         url = image.url
         return request.build_absolute_uri(url) if request else url
 
+    def get_total_amount(self, obj):
+        from decimal import Decimal
+
+        if not obj.start_time or not obj.end_time or not obj.ground.price_per_hour:
+            return None
+
+        start_minutes = obj.start_time.hour * 60 + obj.start_time.minute
+        end_minutes = obj.end_time.hour * 60 + obj.end_time.minute
+        duration_hours = Decimal(end_minutes - start_minutes) / Decimal(60)
+
+        total = Decimal(obj.ground.price_per_hour) * duration_hours
+        return str(total.quantize(Decimal("0.01")))
+
+    def get_remaining_amount(self, obj):
+        from decimal import Decimal
+
+        total_str = self.get_total_amount(obj)
+        if total_str is None:
+            return None
+
+        total = Decimal(total_str)
+        paid = Decimal(obj.paid_amount or 0)
+        remaining = total - paid
+
+        if remaining < 0:
+            remaining = Decimal("0.00")
+
+        return str(remaining.quantize(Decimal("0.01")))
 
 class JoinOpenBookingSerializer(serializers.Serializer):
     def validate(self, attrs):
