@@ -9,6 +9,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from bookings.models import Booking
+from bookings.serializers import BookingSerializer
 from .models import Ground, GroundAvailability
 from .serializers import (
     AvailabilityBulkUpsertSerializer,
@@ -115,7 +116,9 @@ class OwnerMyGroundsView(APIView):
     def get(self, request):
         qs = Ground.objects.filter(owner=request.user).order_by("-created_at")
         serializer = OwnerGroundEditSerializer(
-            qs, many=True, context={"request": request}
+            qs,
+            many=True,
+            context={"request": request}
         )
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -160,6 +163,27 @@ class OwnerGroundDetailUpdateView(APIView):
         )
         serializer.is_valid(raise_exception=True)
         serializer.save()
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class OwnerGroundBookingsView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, pk):
+        ground = get_object_or_404(Ground, pk=pk, owner=request.user)
+
+        bookings = (
+            Booking.objects
+            .select_related("ground", "created_by")
+            .filter(ground=ground)
+            .order_by("-date", "-start_time")
+        )
+
+        serializer = BookingSerializer(
+            bookings,
+            many=True,
+            context={"request": request}
+        )
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
