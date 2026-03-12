@@ -4,7 +4,7 @@ from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_date
 
 from rest_framework import permissions, status, viewsets
-from rest_framework.parsers import FormParser, MultiPartParser
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -15,13 +15,14 @@ from .serializers import (
     GroundCreateSerializer,
     GroundDetailSerializer,
     GroundListSerializer,
+    OwnerGroundEditSerializer,
 )
 from .slot_constants import FIXED_SLOTS
 
 
 class GroundViewSet(viewsets.ModelViewSet):
     queryset = Ground.objects.all().order_by("-created_at")
-    parser_classes = (MultiPartParser, FormParser)
+    parser_classes = (MultiPartParser, FormParser, JSONParser)
 
     def get_permissions(self):
         if self.action in ["create", "update", "partial_update", "destroy"]:
@@ -38,13 +39,8 @@ class GroundViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         qs = super().get_queryset()
 
-        # Public users only see approved grounds
         if self.action in ["list", "retrieve"]:
             qs = qs.filter(status=Ground.Status.APPROVED)
-
-        # Owner can only update/delete own grounds
-        if self.action in ["update", "partial_update", "destroy"]:
-            qs = qs.filter(owner=self.request.user)
 
         params = self.request.query_params
         search = (params.get("search") or "").strip()
@@ -110,7 +106,6 @@ class GroundViewSet(viewsets.ModelViewSet):
         return qs
 
     def perform_create(self, serializer):
-        # This automatically stores request.user.user_id inside Ground.owner_id
         serializer.save(owner=self.request.user, status=Ground.Status.PENDING)
 
 
@@ -118,18 +113,53 @@ class OwnerMyGroundsView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        if request.user.user_type != "owner":
-            return Response(
-                {"detail": "Only owners can view their grounds."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        qs = Ground.objects.filter(owner=request.user).order_by("-created_at")
+        serializer = OwnerGroundEditSerializer(
+            qs, many=True, context={"request": request}
+        )
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
-        grounds = Ground.objects.filter(owner=request.user).order_by("-created_at")
-        serializer = GroundDetailSerializer(
-            grounds,
-            many=True,
+
+class OwnerGroundDetailUpdateView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = (MultiPartParser, FormParser, JSONParser)
+
+    def get_object(self, request, pk):
+        return get_object_or_404(Ground, pk=pk, owner=request.user)
+
+    def get(self, request, pk):
+        ground = self.get_object(request, pk)
+        serializer = OwnerGroundEditSerializer(ground, context={"request": request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def patch(self, request, pk):
+        print("PATCH DATA:", request.data)
+        print("PATCH FILES:", request.FILES)
+
+        ground = self.get_object(request, pk)
+        serializer = OwnerGroundEditSerializer(
+            ground,
+            data=request.data,
+            partial=True,
             context={"request": request},
         )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def put(self, request, pk):
+        print("PUT DATA:", request.data)
+        print("PUT FILES:", request.FILES)
+
+        ground = self.get_object(request, pk)
+        serializer = OwnerGroundEditSerializer(
+            ground,
+            data=request.data,
+            partial=False,
+            context={"request": request},
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
@@ -139,7 +169,7 @@ class GroundAvailabilityBulkUpsertView(APIView):
     def post(self, request, pk):
         ground = get_object_or_404(Ground, pk=pk)
 
-        if ground.owner_id != request.user.user_id:
+        if ground.owner_id != request.user.pk:
             return Response(
                 {"detail": "Not allowed."},
                 status=status.HTTP_403_FORBIDDEN

@@ -72,9 +72,35 @@ class GroundDetailSerializer(serializers.ModelSerializer):
         return request.build_absolute_uri(url) if request else url
 
 
-# -----------------------------
-# ✅ Availability Bulk Serializers
-# -----------------------------
+class OwnerGroundEditSerializer(serializers.ModelSerializer):
+    image_url = serializers.SerializerMethodField()
+    owner_id = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = Ground
+        fields = [
+            "id",
+            "owner_id",
+            "name",
+            "location",
+            "price_per_hour",
+            "description",
+            "phone",
+            "ground_size",
+            "image",        
+            "image_url",
+            "status",
+            "created_at",
+        ]
+        read_only_fields = ["id", "owner_id", "status", "created_at", "image_url"]
+
+    def get_image_url(self, obj):
+        request = self.context.get("request")
+        if not obj.image:
+            return None
+        url = obj.image.url
+        return request.build_absolute_uri(url) if request else url
+
 
 class AvailabilityWindowSerializer(serializers.Serializer):
     start_time = serializers.TimeField()
@@ -92,11 +118,8 @@ class DayAvailabilitySerializer(serializers.Serializer):
 
     def validate(self, attrs):
         windows = attrs["windows"]
-
-        # sort by start_time
         windows_sorted = sorted(windows, key=lambda w: (w["start_time"], w["end_time"]))
 
-        # check duplicates + overlaps
         prev_end = None
         seen = set()
 

@@ -6,6 +6,7 @@ from .views import (
     OwnerMyGroundsView,
     GroundAvailabilityBulkUpsertView,
     GroundSlotsForDateView,
+    OwnerGroundDetailUpdateView,
 )
 
 router = DefaultRouter()
@@ -16,8 +17,17 @@ urlpatterns = [
 
     # owner grounds
     path("owner/grounds/", OwnerMyGroundsView.as_view(), name="owner-my-grounds"),
+    path("owner/grounds/<int:pk>/edit/", OwnerGroundDetailUpdateView.as_view(), name="owner-ground-edit"),
 
     # availability
-    path("grounds/<int:pk>/availability/bulk/", GroundAvailabilityBulkUpsertView.as_view()),
-    path("grounds/<int:pk>/slots/", GroundSlotsForDateView.as_view()),
+    path(
+        "grounds/<int:pk>/availability/bulk/",
+        GroundAvailabilityBulkUpsertView.as_view(),
+        name="ground-availability-bulk",
+    ),
+    path(
+        "grounds/<int:pk>/slots/",
+        GroundSlotsForDateView.as_view(),
+        name="ground-slots-for-date",
+    ),
 ]
