@@ -11,6 +11,8 @@ from datetime import timedelta
 # Load environment variables
 load_dotenv()
 
+PAYMENT_MODE = os.getenv("PAYMENT_MODE", "esewa")
+
 # Base directory
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -43,6 +45,7 @@ INSTALLED_APPS = [
     'grounds',
     'bookings',
     'payments',
+    'chat',
 ]
 
 MIDDLEWARE = [
