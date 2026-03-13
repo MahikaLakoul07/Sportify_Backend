@@ -10,6 +10,11 @@ from .serializers import (
     JoinOpenBookingSerializer,
 )
 
+from chat.utils import (
+    create_temporary_chat_for_booking,
+    add_user_to_booking_chat,
+)
+
 
 class BookingViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
@@ -37,6 +42,22 @@ class BookingViewSet(viewsets.ModelViewSet):
         qs = self.get_queryset()
         ser = BookingSerializer(qs, many=True, context={"request": request})
         return Response(ser.data)
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+
+        booking = serializer.save()
+
+        # STEP 11:
+        # if public/open booking, create temporary group chat
+        if booking.booking_type == Booking.BookingType.OPEN:
+            create_temporary_chat_for_booking(booking)
+
+        return Response(
+            BookingSerializer(booking, context={"request": request}).data,
+            status=status.HTTP_201_CREATED
+        )
 
     @action(
         detail=False,
@@ -74,6 +95,10 @@ class BookingViewSet(viewsets.ModelViewSet):
         )
         serializer.is_valid(raise_exception=True)
         booking = serializer.save()
+
+        # STEP 12:
+        # add the current user into that booking's group chat
+        add_user_to_booking_chat(booking, request.user)
 
         return Response(
             BookingSerializer(booking, context={"request": request}).data,
