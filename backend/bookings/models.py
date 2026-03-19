@@ -1,4 +1,3 @@
-# bookings/models.py
 from django.conf import settings
 from django.db import models
 from django.utils import timezone
@@ -18,6 +17,10 @@ class Booking(models.Model):
     class BookingType(models.TextChoices):
         OPEN = "OPEN", "Open Booking"
         CLOSED = "CLOSED", "Closed Booking"
+
+    class PaymentMode(models.TextChoices):
+        PAY_DEPOSIT = "PAY_DEPOSIT", "Pay on Field"
+        PAY_FULL_ONLINE = "PAY_FULL_ONLINE", "Pay Full Online"
 
     ground = models.ForeignKey(
         Ground,
@@ -51,6 +54,12 @@ class Booking(models.Model):
         default=Source.ONLINE
     )
 
+    payment_mode = models.CharField(
+        max_length=20,
+        choices=PaymentMode.choices,
+        default=PaymentMode.PAY_DEPOSIT
+    )
+
     status = models.CharField(
         max_length=10,
         choices=Status.choices,
@@ -63,16 +72,10 @@ class Booking(models.Model):
         default=BookingType.CLOSED
     )
 
-    # total players currently in open booking
     current_players = models.PositiveIntegerField(default=1)
-
-    # how many players needed in total
     required_players = models.PositiveIntegerField(default=1)
-
-    # optional note for open game
     open_game_note = models.TextField(blank=True, default="")
 
-    # eSewa fields
     transaction_uuid = models.CharField(
         max_length=64,
         unique=True,

@@ -76,6 +76,7 @@ def create_booking_from_intent(transaction_uuid: str, transaction_code: str = ""
     booking_type = intent["booking_type"]
     required_players = int(intent["required_players"])
     open_game_note = intent["open_game_note"]
+    payment_mode = intent.get("payment_mode", "PAY_DEPOSIT")
 
     overlap = Booking.objects.filter(
         ground=ground,
@@ -106,6 +107,7 @@ def create_booking_from_intent(transaction_uuid: str, transaction_code: str = ""
             player_id=user_id,
             created_by_id=user_id,
             source=Booking.Source.ONLINE,
+            payment_mode=payment_mode,
             status=Booking.Status.BOOKED,
             booking_type=booking_type,
             current_players=1,
@@ -138,6 +140,7 @@ class EsewaInitiateView(APIView):
         required_players = request.data.get("required_players", 1)
         open_game_note = request.data.get("open_game_note", "")
         needed_positions = request.data.get("needed_positions", [])
+        payment_mode = request.data.get("payment_mode", "PAY_DEPOSIT")
 
         try:
             ground = Ground.objects.get(
@@ -159,6 +162,9 @@ class EsewaInitiateView(APIView):
 
         if booking_type not in [Booking.BookingType.OPEN, Booking.BookingType.CLOSED]:
             return Response({"detail": "Invalid booking type."}, status=400)
+
+        if payment_mode not in ["PAY_DEPOSIT", "PAY_FULL_ONLINE"]:
+            return Response({"detail": "Invalid payment mode."}, status=400)
 
         try:
             required_players = int(required_players)
@@ -207,23 +213,24 @@ class EsewaInitiateView(APIView):
                 "open_game_note": open_game_note,
                 "needed_positions": needed_positions,
                 "total_amount": total_amount_str,
+                "payment_mode": payment_mode,
             },
             timeout=CACHE_TIMEOUT_SECONDS,
         )
 
-        payment_mode = getattr(settings, "PAYMENT_MODE", "esewa").lower()
+        payment_mode_setting = getattr(settings, "PAYMENT_MODE", "esewa").lower()
 
-        if payment_mode == "mock":
-            mock_url = request.build_absolute_uri(
-                f"/api/payments/esewa/mock-success/?tx={transaction_uuid}"
-            )
-            return Response(
-                {
-                    "mode": "mock",
-                    "redirect_url": mock_url,
-                },
-                status=200,
-            )
+        # if payment_mode_setting == "mock":
+        #     mock_url = request.build_absolute_uri(
+        #         f"/api/payments/esewa/mock-success/?tx={transaction_uuid}"
+        #     )
+        #     return Response(
+        #         {
+        #             "mode": "mock",
+        #             "redirect_url": mock_url,
+        #         },
+        #         status=200,
+        #     )
 
         product_code = settings.ESEWA_PRODUCT_CODE
         signed_field_names = "total_amount,transaction_uuid,product_code"
@@ -262,35 +269,35 @@ class EsewaInitiateView(APIView):
         )
 
 
-class EsewaMockSuccessView(APIView):
-    permission_classes = [permissions.AllowAny]
-
-    def get(self, request):
-        transaction_uuid = request.query_params.get("tx")
-
-        if not transaction_uuid:
-            return HttpResponseRedirect(
-                f"{settings.FRONTEND_BASE_URL}/mybookings?payment=failure"
-            )
-
-        booking, status_code = create_booking_from_intent(
-            transaction_uuid=transaction_uuid,
-            transaction_code="MOCK-SUCCESS",
-        )
-
-        if status_code in ["created", "already_exists"]:
-            return HttpResponseRedirect(
-                f"{settings.FRONTEND_BASE_URL}/mybookings?payment=success&booking_id={booking.pk}&tx={transaction_uuid}"
-            )
-
-        if status_code == "slot_taken":
-            return HttpResponseRedirect(
-                f"{settings.FRONTEND_BASE_URL}/mybookings?payment=slot_taken"
-            )
-
-        return HttpResponseRedirect(
-            f"{settings.FRONTEND_BASE_URL}/mybookings?payment=failure"
-        )
+# class EsewaMockSuccessView(APIView):
+#     permission_classes = [permissions.AllowAny]
+#
+#     def get(self, request):
+#         transaction_uuid = request.query_params.get("tx")
+#
+#         if not transaction_uuid:
+#             return HttpResponseRedirect(
+#                 f"{settings.FRONTEND_BASE_URL}/mybookings?payment=failure"
+#             )
+#
+#         booking, status_code = create_booking_from_intent(
+#             transaction_uuid=transaction_uuid,
+#             transaction_code="MOCK-SUCCESS",
+#         )
+#
+#         if status_code in ["created", "already_exists"]:
+#             return HttpResponseRedirect(
+#                 f"{settings.FRONTEND_BASE_URL}/mybookings?payment=success&booking_id={booking.pk}&tx={transaction_uuid}"
+#             )
+#
+#         if status_code == "slot_taken":
+#             return HttpResponseRedirect(
+#                 f"{settings.FRONTEND_BASE_URL}/mybookings?payment=slot_taken"
+#             )
+#
+#         return HttpResponseRedirect(
+#             f"{settings.FRONTEND_BASE_URL}/mybookings?payment=failure"
+#         )
 
 
 class EsewaSuccessView(APIView):
