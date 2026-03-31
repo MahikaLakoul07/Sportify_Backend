@@ -216,3 +216,63 @@ class JoinOpenBookingSerializer(serializers.Serializer):
             booking.refresh_from_db()
 
         return booking
+
+class OwnerDirectBookingSerializer(serializers.ModelSerializer):
+    notes = serializers.CharField(write_only=True, required=False, allow_blank=True, default="")
+
+    class Meta:
+        model = Booking
+        fields = [
+            "ground",
+            "date",
+            "start_time",
+            "end_time",
+            "notes",
+        ]
+
+    def validate(self, attrs):
+        request = self.context["request"]
+        ground = attrs["ground"]
+
+        if ground.owner_id != request.user.user_id:
+            raise serializers.ValidationError("You can only book your own ground.")
+
+        if ground.status != Ground.Status.APPROVED:
+            raise serializers.ValidationError("Ground is not approved.")
+
+        if not is_fixed_slot(attrs["start_time"], attrs["end_time"]):
+            raise serializers.ValidationError("Invalid slot.")
+
+        return attrs
+
+    def create(self, validated_data):
+        request = self.context["request"]
+        notes = validated_data.pop("notes", "")
+
+        with transaction.atomic():
+            overlap_exists = Booking.objects.select_for_update().filter(
+                ground=validated_data["ground"],
+                date=validated_data["date"],
+                status=Booking.Status.BOOKED,
+                start_time__lt=validated_data["end_time"],
+                end_time__gt=validated_data["start_time"],
+            ).exists()
+
+            if overlap_exists:
+                raise serializers.ValidationError("This slot is already booked.")
+
+            booking = Booking.objects.create(
+                player=request.user,
+                created_by=request.user,
+                source=Booking.Source.OFFLINE,
+                status=Booking.Status.BOOKED,
+                booking_type=Booking.BookingType.CLOSED,
+                payment_mode=Booking.PaymentMode.PAY_DEPOSIT,
+                current_players=1,
+                required_players=1,
+                open_game_note=notes,
+                paid_amount=0,
+                **validated_data,
+            )
+
+        return booking
