@@ -13,6 +13,7 @@ from rest_framework import permissions
 from bookings.models import Booking
 from grounds.models import Ground
 from grounds.slot_constants import FIXED_SLOTS
+from chat.utils import create_temporary_chat_for_booking  # <-- IMPORTANT
 
 from .utils import (
     esewa_make_signature,
@@ -56,9 +57,17 @@ def normalize_amount(value) -> str:
 
 
 def create_booking_from_intent(transaction_uuid: str, transaction_code: str = "", paid_amount=None):
+    print("\n========== CREATE BOOKING FROM INTENT START ==========")
+    print("transaction_uuid:", transaction_uuid)
+    print("transaction_code:", transaction_code)
+
     intent = cache.get(payment_cache_key(transaction_uuid))
     if not intent:
+        print("Intent not found in cache")
+        print("========== CREATE BOOKING FROM INTENT END ==========\n")
         return None, "intent_not_found"
+
+    print("Intent found:", intent)
 
     try:
         ground = Ground.objects.get(
@@ -66,7 +75,9 @@ def create_booking_from_intent(transaction_uuid: str, transaction_code: str = ""
             status=Ground.Status.APPROVED
         )
     except Ground.DoesNotExist:
+        print("Ground not found")
         cache.delete(payment_cache_key(transaction_uuid))
+        print("========== CREATE BOOKING FROM INTENT END ==========\n")
         return None, "ground_not_found"
 
     d = parse_date(intent["date"])
@@ -78,6 +89,16 @@ def create_booking_from_intent(transaction_uuid: str, transaction_code: str = ""
     open_game_note = intent["open_game_note"]
     payment_mode = intent.get("payment_mode", "PAY_DEPOSIT")
 
+    print("Parsed booking intent:")
+    print("ground:", ground.pk)
+    print("date:", d)
+    print("start_time:", start_t)
+    print("end_time:", end_t)
+    print("user_id:", user_id)
+    print("booking_type:", booking_type)
+    print("required_players:", required_players)
+    print("payment_mode:", payment_mode)
+
     overlap = Booking.objects.filter(
         ground=ground,
         date=d,
@@ -87,12 +108,22 @@ def create_booking_from_intent(transaction_uuid: str, transaction_code: str = ""
     ).exists()
 
     if overlap:
+        print("Overlap found -> slot already taken")
         cache.delete(payment_cache_key(transaction_uuid))
+        print("========== CREATE BOOKING FROM INTENT END ==========\n")
         return None, "slot_taken"
 
     existing = Booking.objects.filter(transaction_uuid=transaction_uuid).first()
     if existing:
+        print("Booking already exists with transaction_uuid:", transaction_uuid)
+
+        # Ensure chat exists if this is an OPEN booking
+        if str(existing.booking_type).upper() == "OPEN":
+            print("Existing booking is OPEN -> ensuring temporary chat exists")
+            create_temporary_chat_for_booking(existing)
+
         cache.delete(payment_cache_key(transaction_uuid))
+        print("========== CREATE BOOKING FROM INTENT END ==========\n")
         return existing, "already_exists"
 
     if paid_amount is None:
@@ -111,18 +142,32 @@ def create_booking_from_intent(transaction_uuid: str, transaction_code: str = ""
             status=Booking.Status.BOOKED,
             booking_type=booking_type,
             current_players=1,
-            required_players=required_players if booking_type == Booking.BookingType.OPEN else 1,
-            open_game_note=open_game_note if booking_type == Booking.BookingType.OPEN else "",
+            required_players=required_players if str(booking_type).upper() == "OPEN" else 1,
+            open_game_note=open_game_note if str(booking_type).upper() == "OPEN" else "",
             transaction_uuid=transaction_uuid,
             transaction_code=transaction_code,
             paid_amount=Decimal(str(paid_amount)),
         )
+        print("Booking created successfully -> booking.id:", booking.id)
     except Exception as e:
         print("BOOKING CREATE ERROR:", str(e))
         cache.delete(payment_cache_key(transaction_uuid))
+        print("========== CREATE BOOKING FROM INTENT END ==========\n")
         return None, "create_failed"
 
+    # IMPORTANT: create temporary group chat for OPEN bookings
+    try:
+        if str(booking.booking_type).upper() == "OPEN":
+            print("OPEN booking detected -> creating temporary chat")
+            group = create_temporary_chat_for_booking(booking)
+            print("Temporary chat created -> group.id:", group.id)
+        else:
+            print("Booking is not OPEN -> no temp chat needed")
+    except Exception as e:
+        print("TEMP CHAT CREATE ERROR:", str(e))
+
     cache.delete(payment_cache_key(transaction_uuid))
+    print("========== CREATE BOOKING FROM INTENT END ==========\n")
     return booking, "created"
 
 
@@ -220,18 +265,6 @@ class EsewaInitiateView(APIView):
 
         payment_mode_setting = getattr(settings, "PAYMENT_MODE", "esewa").lower()
 
-        # if payment_mode_setting == "mock":
-        #     mock_url = request.build_absolute_uri(
-        #         f"/api/payments/esewa/mock-success/?tx={transaction_uuid}"
-        #     )
-        #     return Response(
-        #         {
-        #             "mode": "mock",
-        #             "redirect_url": mock_url,
-        #         },
-        #         status=200,
-        #     )
-
         product_code = settings.ESEWA_PRODUCT_CODE
         signed_field_names = "total_amount,transaction_uuid,product_code"
 
@@ -267,37 +300,6 @@ class EsewaInitiateView(APIView):
             },
             status=200,
         )
-
-
-# class EsewaMockSuccessView(APIView):
-#     permission_classes = [permissions.AllowAny]
-#
-#     def get(self, request):
-#         transaction_uuid = request.query_params.get("tx")
-#
-#         if not transaction_uuid:
-#             return HttpResponseRedirect(
-#                 f"{settings.FRONTEND_BASE_URL}/mybookings?payment=failure"
-#             )
-#
-#         booking, status_code = create_booking_from_intent(
-#             transaction_uuid=transaction_uuid,
-#             transaction_code="MOCK-SUCCESS",
-#         )
-#
-#         if status_code in ["created", "already_exists"]:
-#             return HttpResponseRedirect(
-#                 f"{settings.FRONTEND_BASE_URL}/mybookings?payment=success&booking_id={booking.pk}&tx={transaction_uuid}"
-#             )
-#
-#         if status_code == "slot_taken":
-#             return HttpResponseRedirect(
-#                 f"{settings.FRONTEND_BASE_URL}/mybookings?payment=slot_taken"
-#             )
-#
-#         return HttpResponseRedirect(
-#             f"{settings.FRONTEND_BASE_URL}/mybookings?payment=failure"
-#         )
 
 
 class EsewaSuccessView(APIView):

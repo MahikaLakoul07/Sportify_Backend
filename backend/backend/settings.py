@@ -45,8 +45,9 @@ INSTALLED_APPS = [
     'grounds',
     'bookings',
     'payments',
-    'chat',
     'connections',
+    'chat',
+    'channels',
 ]
 
 MIDDLEWARE = [
@@ -79,6 +80,8 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'backend.wsgi.application'
 
+ASGI_APPLICATION = "backend.asgi.application"
+
 # =========================
 # Database (PostgreSQL)
 # =========================
@@ -86,9 +89,9 @@ WSGI_APPLICATION = 'backend.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.getenv("DB_NAME", "chrono"),
+        'NAME': os.getenv("DB_NAME", "sportify"),
         'USER': os.getenv("DB_USER", "postgres"),
-        'PASSWORD': os.getenv("DB_PASSWORD", ""),
+        'PASSWORD': os.getenv("DB_PASSWORD", "123456789"),
         'HOST': os.getenv("DB_HOST", "127.0.0.1"),
         'PORT': os.getenv("DB_PORT", "5432"),
     }
@@ -188,10 +191,16 @@ EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-ESEWA_PRODUCT_CODE = os.environ["ESEWA_PRODUCT_CODE"]
-ESEWA_SECRET_KEY = os.environ["ESEWA_SECRET_KEY"]
-ESEWA_FORM_URL = os.environ["ESEWA_FORM_URL"]
-ESEWA_STATUS_URL = os.environ["ESEWA_STATUS_URL"]
-ESEWA_SUCCESS_URL = os.environ["ESEWA_SUCCESS_URL"]
-ESEWA_FAILURE_URL = os.environ["ESEWA_FAILURE_URL"]
-FRONTEND_BASE_URL = os.environ["FRONTEND_BASE_URL"]
+ESEWA_PRODUCT_CODE = os.environ.get("ESEWA_PRODUCT_CODE", "")
+ESEWA_SECRET_KEY = os.environ.get("ESEWA_SECRET_KEY", "")
+ESEWA_FORM_URL = os.environ.get("ESEWA_FORM_URL", "")
+ESEWA_STATUS_URL = os.environ.get("ESEWA_STATUS_URL", "")
+ESEWA_SUCCESS_URL = os.environ.get("ESEWA_SUCCESS_URL", "")
+ESEWA_FAILURE_URL = os.environ.get("ESEWA_FAILURE_URL", "")
+FRONTEND_BASE_URL = os.environ.get("FRONTEND_BASE_URL", "")
+
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels.layers.InMemoryChannelLayer",
+    },
+}

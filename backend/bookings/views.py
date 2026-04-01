@@ -14,6 +14,7 @@ from .serializers import (
 from chat.utils import (
     create_temporary_chat_for_booking,
     add_user_to_booking_chat,
+    deactivate_booking_chat,
 )
 
 
@@ -49,6 +50,9 @@ class BookingViewSet(viewsets.ModelViewSet):
         return Response(ser.data)
 
     def create(self, request, *args, **kwargs):
+        print("\n========== BOOKING CREATE START ==========")
+        print("Request data:", request.data)
+
         serializer = self.get_serializer(
             data=request.data,
             context={"request": request}
@@ -57,8 +61,21 @@ class BookingViewSet(viewsets.ModelViewSet):
 
         booking = serializer.save()
 
-        if booking.booking_type == Booking.BookingType.OPEN:
-            create_temporary_chat_for_booking(booking)
+        print("Booking saved successfully")
+        print("booking.id:", booking.id)
+        print("booking.booking_type:", booking.booking_type)
+        print("booking.created_by_id:", booking.created_by_id)
+        print("booking.player_id:", booking.player_id)
+
+        # safer than direct enum comparison
+        if str(booking.booking_type).upper() == "OPEN":
+            print("OPEN booking detected -> creating temporary chat")
+            group = create_temporary_chat_for_booking(booking)
+            print("Temporary chat created -> group.id:", group.id)
+        else:
+            print("Booking is not OPEN, skipping group chat creation")
+
+        print("========== BOOKING CREATE END ==========\n")
 
         return Response(
             BookingSerializer(booking, context={"request": request}).data,
@@ -93,7 +110,11 @@ class BookingViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], url_path="join")
     def join(self, request, pk=None):
+        print("\n========== OPEN BOOKING JOIN START ==========")
+
         booking = self.get_object()
+        print("booking.id:", booking.id)
+        print("request.user.id:", request.user.pk)
 
         serializer = JoinOpenBookingSerializer(
             data=request.data,
@@ -102,12 +123,31 @@ class BookingViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         booking = serializer.save()
 
-        add_user_to_booking_chat(booking, request.user)
+        print("Join serializer saved successfully")
+        print("Adding joined user to booking chat...")
+
+        group = add_user_to_booking_chat(booking, request.user)
+        print("Group after join:", getattr(group, "id", None))
+
+        print("========== OPEN BOOKING JOIN END ==========\n")
 
         return Response(
             BookingSerializer(booking, context={"request": request}).data,
             status=status.HTTP_200_OK
         )
+
+    @action(detail=True, methods=["post"], url_path="deactivate-chat")
+    def deactivate_chat(self, request, pk=None):
+        booking = self.get_object()
+
+        if booking.created_by_id != request.user.pk:
+            return Response(
+                {"detail": "Only the booking creator can deactivate this chat."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        deactivate_booking_chat(booking)
+        return Response({"detail": "Chat deactivated."}, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=["post"], url_path="owner-direct-booking")
     def owner_direct_booking(self, request):
