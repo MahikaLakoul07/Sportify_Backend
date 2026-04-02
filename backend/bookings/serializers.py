@@ -1,10 +1,15 @@
-from rest_framework import serializers
+# backend/bookings/serializers.py
+
+from decimal import Decimal
+
 from django.db import IntegrityError, transaction
 from django.db.models import F
+from rest_framework import serializers
 
 from .models import Booking
 from grounds.models import Ground
 from grounds.slot_constants import FIXED_SLOTS
+from chat.models import ChatGroupMember
 
 
 def is_fixed_slot(start_time, end_time):
@@ -15,14 +20,14 @@ class BookingCreateSerializer(serializers.ModelSerializer):
     booking_type = serializers.ChoiceField(
         choices=Booking.BookingType.choices,
         required=False,
-        default=Booking.BookingType.CLOSED
+        default=Booking.BookingType.CLOSED,
     )
     required_players = serializers.IntegerField(required=False, default=1)
     open_game_note = serializers.CharField(required=False, allow_blank=True, default="")
     payment_mode = serializers.ChoiceField(
         choices=Booking.PaymentMode.choices,
         required=False,
-        default=Booking.PaymentMode.PAY_DEPOSIT
+        default=Booking.PaymentMode.PAY_DEPOSIT,
     )
 
     class Meta:
@@ -67,7 +72,7 @@ class BookingCreateSerializer(serializers.ModelSerializer):
 
         with transaction.atomic():
             try:
-                return Booking.objects.create(
+                booking = Booking.objects.create(
                     player=request.user,
                     created_by=request.user,
                     source=Booking.Source.ONLINE,
@@ -78,20 +83,24 @@ class BookingCreateSerializer(serializers.ModelSerializer):
                     required_players=required_players if booking_type == Booking.BookingType.OPEN else 1,
                     **validated_data,
                 )
+                return booking
             except IntegrityError:
                 raise serializers.ValidationError("This slot is already booked.")
 
 
 class BookingSerializer(serializers.ModelSerializer):
+    player = serializers.IntegerField(source="player_id", read_only=True)
+    created_by = serializers.IntegerField(source="created_by_id", read_only=True)
     ground_name = serializers.CharField(source="ground.name", read_only=True)
     location = serializers.CharField(source="ground.location", read_only=True)
     ground_phone = serializers.CharField(source="ground.phone", read_only=True)
+    ground_owner_id = serializers.IntegerField(source="ground.owner_id", read_only=True)
 
     ground_price_per_hour = serializers.DecimalField(
         source="ground.price_per_hour",
         max_digits=10,
         decimal_places=2,
-        read_only=True
+        read_only=True,
     )
 
     ground_image_url = serializers.SerializerMethodField()
@@ -100,15 +109,19 @@ class BookingSerializer(serializers.ModelSerializer):
     total_amount = serializers.SerializerMethodField()
     remaining_amount = serializers.SerializerMethodField()
     payment_display = serializers.SerializerMethodField()
+    group_chat_id = serializers.SerializerMethodField()
+    is_joined = serializers.SerializerMethodField()
 
     class Meta:
         model = Booking
         fields = [
             "id",
+            "player",
             "ground",
             "ground_name",
             "location",
             "ground_phone",
+            "ground_owner_id",
             "ground_price_per_hour",
             "ground_image_url",
             "date",
@@ -119,10 +132,13 @@ class BookingSerializer(serializers.ModelSerializer):
             "payment_mode",
             "payment_display",
             "booking_type",
+            "created_by",
             "current_players",
             "required_players",
             "spots_left",
             "is_open_joinable",
+            "is_joined",
+            "group_chat_id",
             "open_game_note",
             "transaction_uuid",
             "transaction_code",
@@ -135,14 +151,14 @@ class BookingSerializer(serializers.ModelSerializer):
     def get_ground_image_url(self, obj):
         request = self.context.get("request")
         image = getattr(obj.ground, "image", None)
+
         if not image:
             return None
+
         url = image.url
         return request.build_absolute_uri(url) if request else url
 
     def get_total_amount(self, obj):
-        from decimal import Decimal
-
         if not obj.start_time or not obj.end_time or not obj.ground.price_per_hour:
             return None
 
@@ -154,8 +170,6 @@ class BookingSerializer(serializers.ModelSerializer):
         return str(total.quantize(Decimal("0.01")))
 
     def get_remaining_amount(self, obj):
-        from decimal import Decimal
-
         total_str = self.get_total_amount(obj)
         if total_str is None:
             return None
@@ -180,16 +194,44 @@ class BookingSerializer(serializers.ModelSerializer):
             return "ONLINE"
         return "N/A"
 
+    def get_group_chat_id(self, obj):
+        group = getattr(obj, "chat_group", None)
+        return group.id if group else None
+
+    def get_is_joined(self, obj):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+
+        if not user or not user.is_authenticated:
+            return False
+
+        if obj.created_by_id == user.pk:
+            return True
+
+        group = getattr(obj, "chat_group", None)
+        if not group:
+            return False
+
+        return ChatGroupMember.objects.filter(group=group, user=user).exists()
+
 
 class JoinOpenBookingSerializer(serializers.Serializer):
     def validate(self, attrs):
         booking = self.context["booking"]
+        request = self.context["request"]
+        group = getattr(booking, "chat_group", None)
 
         if booking.booking_type != Booking.BookingType.OPEN:
             raise serializers.ValidationError("This is not an open booking.")
 
         if booking.status != Booking.Status.BOOKED:
             raise serializers.ValidationError("This booking is not active.")
+
+        if booking.created_by_id == request.user.pk:
+            raise serializers.ValidationError("You cannot join a game you created.")
+
+        if group and ChatGroupMember.objects.filter(group=group, user=request.user).exists():
+            raise serializers.ValidationError("You have already joined this game.")
 
         if booking.current_players >= booking.required_players:
             raise serializers.ValidationError("This game is already full.")
@@ -198,15 +240,23 @@ class JoinOpenBookingSerializer(serializers.Serializer):
 
     def save(self, **kwargs):
         booking = self.context["booking"]
+        request = self.context["request"]
 
         with transaction.atomic():
             booking = Booking.objects.select_for_update().get(pk=booking.pk)
+            group = getattr(booking, "chat_group", None)
 
             if booking.booking_type != Booking.BookingType.OPEN:
                 raise serializers.ValidationError("This is not an open booking.")
 
             if booking.status != Booking.Status.BOOKED:
                 raise serializers.ValidationError("This booking is not active.")
+
+            if booking.created_by_id == request.user.pk:
+                raise serializers.ValidationError("You cannot join a game you created.")
+
+            if group and ChatGroupMember.objects.filter(group=group, user=request.user).exists():
+                raise serializers.ValidationError("You have already joined this game.")
 
             if booking.current_players >= booking.required_players:
                 raise serializers.ValidationError("This game is already full.")
@@ -216,6 +266,7 @@ class JoinOpenBookingSerializer(serializers.Serializer):
             booking.refresh_from_db()
 
         return booking
+
 
 class OwnerDirectBookingSerializer(serializers.ModelSerializer):
     notes = serializers.CharField(write_only=True, required=False, allow_blank=True, default="")

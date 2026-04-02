@@ -3,7 +3,7 @@ from django.db.models import Q
 from django.utils import timezone
 from rest_framework import serializers
 
-from .models import ConnectionRequest
+from .models import ConnectionRequest, ConnectionNotification
 
 User = get_user_model()
 
@@ -11,7 +11,7 @@ User = get_user_model()
 class SimplePlayerSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ["user_id", "username", "email"]
+        fields = ["user_id", "username", "email", "first_name", "last_name"]
 
 
 class ConnectionRequestSerializer(serializers.ModelSerializer):
@@ -30,6 +30,23 @@ class ConnectionRequestSerializer(serializers.ModelSerializer):
         ]
 
 
+class ConnectionNotificationSerializer(serializers.ModelSerializer):
+    actor = SimplePlayerSerializer(read_only=True)
+    connection_request = ConnectionRequestSerializer(read_only=True)
+
+    class Meta:
+        model = ConnectionNotification
+        fields = [
+            "id",
+            "actor",
+            "connection_request",
+            "notification_type",
+            "message",
+            "is_read",
+            "created_at",
+        ]
+
+
 class SendConnectionRequestSerializer(serializers.Serializer):
     receiver_id = serializers.IntegerField()
 
@@ -43,6 +60,12 @@ class SendConnectionRequestSerializer(serializers.Serializer):
             receiver = User.objects.get(user_id=value)
         except User.DoesNotExist:
             raise serializers.ValidationError("Receiver not found.")
+
+        if getattr(receiver, "user_type", None) != "player":
+            raise serializers.ValidationError("You can only connect with players.")
+
+        if getattr(request.user, "user_type", None) != "player":
+            raise serializers.ValidationError("Only players can send connection requests.")
 
         self.context["receiver"] = receiver
         return value
@@ -86,8 +109,9 @@ class SendConnectionRequestSerializer(serializers.Serializer):
             reverse_request.save(update_fields=["status", "responded_at"])
             return reverse_request
 
-        return ConnectionRequest.objects.create(
+        connection_request = ConnectionRequest.objects.create(
             sender=request.user,
             receiver=receiver,
             status=ConnectionRequest.Status.PENDING,
         )
+        return connection_request

@@ -1,21 +1,34 @@
+from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from .models import ConnectionRequest
+from chat.utils import get_or_create_direct_chat
+from .models import ConnectionRequest, ConnectionNotification
 from .serializers import (
     ConnectionRequestSerializer,
     SendConnectionRequestSerializer,
     SimplePlayerSerializer,
+    ConnectionNotificationSerializer,
 )
 
 
 class ConnectionViewSet(viewsets.ViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
+    def _create_notification(self, *, user, actor, connection_request, notification_type, message):
+        ConnectionNotification.objects.create(
+            user=user,
+            actor=actor,
+            connection_request=connection_request,
+            notification_type=notification_type,
+            message=message,
+        )
+
     @action(detail=False, methods=["post"], url_path="request")
+    @transaction.atomic
     def send_request(self, request):
         serializer = SendConnectionRequestSerializer(
             data=request.data,
@@ -23,6 +36,27 @@ class ConnectionViewSet(viewsets.ViewSet):
         )
         serializer.is_valid(raise_exception=True)
         connection_request = serializer.save()
+
+        # Case 1: reverse pending request existed, so this became ACCEPTED immediately
+        if connection_request.status == ConnectionRequest.Status.ACCEPTED:
+            get_or_create_direct_chat(connection_request.sender, connection_request.receiver)
+
+            self._create_notification(
+                user=connection_request.sender,
+                actor=request.user,
+                connection_request=connection_request,
+                notification_type=ConnectionNotification.Type.REQUEST_ACCEPTED,
+                message=f"{request.user.username} accepted your connection request.",
+            )
+        else:
+            # Normal pending request notification to receiver
+            self._create_notification(
+                user=connection_request.receiver,
+                actor=request.user,
+                connection_request=connection_request,
+                notification_type=ConnectionNotification.Type.REQUEST_SENT,
+                message=f"{request.user.username} has sent you a connection request.",
+            )
 
         return Response(
             ConnectionRequestSerializer(connection_request).data,
@@ -48,6 +82,7 @@ class ConnectionViewSet(viewsets.ViewSet):
         return Response(ConnectionRequestSerializer(qs, many=True).data)
 
     @action(detail=True, methods=["post"], url_path="accept")
+    @transaction.atomic
     def accept_request(self, request, pk=None):
         try:
             connection_request = ConnectionRequest.objects.select_related(
@@ -67,9 +102,22 @@ class ConnectionViewSet(viewsets.ViewSet):
         connection_request.responded_at = timezone.now()
         connection_request.save(update_fields=["status", "responded_at"])
 
+        # Create direct chat automatically after connection is accepted
+        get_or_create_direct_chat(connection_request.sender, connection_request.receiver)
+
+        # Notify sender that request was accepted
+        self._create_notification(
+            user=connection_request.sender,
+            actor=request.user,
+            connection_request=connection_request,
+            notification_type=ConnectionNotification.Type.REQUEST_ACCEPTED,
+            message=f"{request.user.username} accepted your connection request.",
+        )
+
         return Response(ConnectionRequestSerializer(connection_request).data)
 
     @action(detail=True, methods=["post"], url_path="reject")
+    @transaction.atomic
     def reject_request(self, request, pk=None):
         try:
             connection_request = ConnectionRequest.objects.select_related(
@@ -88,6 +136,15 @@ class ConnectionViewSet(viewsets.ViewSet):
         connection_request.status = ConnectionRequest.Status.REJECTED
         connection_request.responded_at = timezone.now()
         connection_request.save(update_fields=["status", "responded_at"])
+
+        # Notify sender that request was rejected
+        self._create_notification(
+            user=connection_request.sender,
+            actor=request.user,
+            connection_request=connection_request,
+            notification_type=ConnectionNotification.Type.REQUEST_REJECTED,
+            message=f"{request.user.username} declined your connection request.",
+        )
 
         return Response(ConnectionRequestSerializer(connection_request).data)
 
@@ -133,4 +190,33 @@ class ConnectionViewSet(viewsets.ViewSet):
                 return Response({"status": "OUTGOING_PENDING", "request_id": relation.id})
             return Response({"status": "INCOMING_PENDING", "request_id": relation.id})
 
+        # rejected should behave like "not connected"
         return Response({"status": "NONE"})
+
+    @action(detail=False, methods=["get"], url_path="notifications")
+    def my_notifications(self, request):
+        notifications = ConnectionNotification.objects.filter(
+            user=request.user
+        ).select_related("actor", "connection_request", "connection_request__sender", "connection_request__receiver")
+
+        return Response(ConnectionNotificationSerializer(notifications, many=True).data)
+
+    @action(detail=True, methods=["post"], url_path="notifications/read")
+    def mark_notification_read(self, request, pk=None):
+        try:
+            notification = ConnectionNotification.objects.get(pk=pk, user=request.user)
+        except ConnectionNotification.DoesNotExist:
+            return Response(
+                {"detail": "Notification not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        notification.is_read = True
+        notification.save(update_fields=["is_read"])
+
+        return Response({"detail": "Notification marked as read."})
+
+    @action(detail=False, methods=["post"], url_path="notifications/read-all")
+    def mark_all_notifications_read(self, request):
+        ConnectionNotification.objects.filter(user=request.user, is_read=False).update(is_read=True)
+        return Response({"detail": "All notifications marked as read."})
