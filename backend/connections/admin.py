@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import ConnectionRequest, ConnectionNotification
+from .models import ConnectionNotification, ConnectionRequest
 
 
 @admin.register(ConnectionRequest)

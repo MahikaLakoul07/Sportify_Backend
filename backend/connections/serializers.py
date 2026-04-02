@@ -3,15 +3,21 @@ from django.db.models import Q
 from django.utils import timezone
 from rest_framework import serializers
 
-from .models import ConnectionRequest, ConnectionNotification
+from .models import ConnectionNotification, ConnectionRequest
 
 User = get_user_model()
 
 
 class SimplePlayerSerializer(serializers.ModelSerializer):
+    full_name = serializers.SerializerMethodField()
+
     class Meta:
         model = User
-        fields = ["user_id", "username", "email", "first_name", "last_name"]
+        fields = ["user_id", "username", "email", "first_name", "last_name", "full_name"]
+
+    def get_full_name(self, obj):
+        full_name = f"{obj.first_name} {obj.last_name}".strip()
+        return full_name if full_name else obj.username
 
 
 class ConnectionRequestSerializer(serializers.ModelSerializer):
@@ -61,10 +67,10 @@ class SendConnectionRequestSerializer(serializers.Serializer):
         except User.DoesNotExist:
             raise serializers.ValidationError("Receiver not found.")
 
-        if getattr(receiver, "user_type", None) != "player":
+        if getattr(receiver, "user_type", None) != User.UserType.PLAYER:
             raise serializers.ValidationError("You can only connect with players.")
 
-        if getattr(request.user, "user_type", None) != "player":
+        if getattr(request.user, "user_type", None) != User.UserType.PLAYER:
             raise serializers.ValidationError("Only players can send connection requests.")
 
         self.context["receiver"] = receiver
@@ -77,8 +83,8 @@ class SendConnectionRequestSerializer(serializers.Serializer):
         already_connected = ConnectionRequest.objects.filter(
             status=ConnectionRequest.Status.ACCEPTED
         ).filter(
-            Q(sender=request.user, receiver=receiver) |
-            Q(sender=receiver, receiver=request.user)
+            Q(sender=request.user, receiver=receiver)
+            | Q(sender=receiver, receiver=request.user)
         ).exists()
 
         if already_connected:
@@ -109,9 +115,8 @@ class SendConnectionRequestSerializer(serializers.Serializer):
             reverse_request.save(update_fields=["status", "responded_at"])
             return reverse_request
 
-        connection_request = ConnectionRequest.objects.create(
+        return ConnectionRequest.objects.create(
             sender=request.user,
             receiver=receiver,
             status=ConnectionRequest.Status.PENDING,
         )
-        return connection_request

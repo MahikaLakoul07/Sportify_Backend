@@ -6,12 +6,12 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from chat.utils import get_or_create_direct_chat
-from .models import ConnectionRequest, ConnectionNotification
+from .models import ConnectionNotification, ConnectionRequest
 from .serializers import (
+    ConnectionNotificationSerializer,
     ConnectionRequestSerializer,
     SendConnectionRequestSerializer,
     SimplePlayerSerializer,
-    ConnectionNotificationSerializer,
 )
 
 
@@ -37,7 +37,6 @@ class ConnectionViewSet(viewsets.ViewSet):
         serializer.is_valid(raise_exception=True)
         connection_request = serializer.save()
 
-        # Case 1: reverse pending request existed, so this became ACCEPTED immediately
         if connection_request.status == ConnectionRequest.Status.ACCEPTED:
             get_or_create_direct_chat(connection_request.sender, connection_request.receiver)
 
@@ -49,7 +48,6 @@ class ConnectionViewSet(viewsets.ViewSet):
                 message=f"{request.user.username} accepted your connection request.",
             )
         else:
-            # Normal pending request notification to receiver
             self._create_notification(
                 user=connection_request.receiver,
                 actor=request.user,
@@ -102,10 +100,8 @@ class ConnectionViewSet(viewsets.ViewSet):
         connection_request.responded_at = timezone.now()
         connection_request.save(update_fields=["status", "responded_at"])
 
-        # Create direct chat automatically after connection is accepted
         get_or_create_direct_chat(connection_request.sender, connection_request.receiver)
 
-        # Notify sender that request was accepted
         self._create_notification(
             user=connection_request.sender,
             actor=request.user,
@@ -137,7 +133,6 @@ class ConnectionViewSet(viewsets.ViewSet):
         connection_request.responded_at = timezone.now()
         connection_request.save(update_fields=["status", "responded_at"])
 
-        # Notify sender that request was rejected
         self._create_notification(
             user=connection_request.sender,
             actor=request.user,
@@ -175,8 +170,8 @@ class ConnectionViewSet(viewsets.ViewSet):
             return Response({"status": "SELF"})
 
         relation = ConnectionRequest.objects.filter(
-            Q(sender=request.user, receiver_id=player_id) |
-            Q(sender_id=player_id, receiver=request.user)
+            Q(sender=request.user, receiver_id=player_id)
+            | Q(sender_id=player_id, receiver=request.user)
         ).order_by("-created_at").first()
 
         if not relation:
@@ -190,14 +185,18 @@ class ConnectionViewSet(viewsets.ViewSet):
                 return Response({"status": "OUTGOING_PENDING", "request_id": relation.id})
             return Response({"status": "INCOMING_PENDING", "request_id": relation.id})
 
-        # rejected should behave like "not connected"
         return Response({"status": "NONE"})
 
     @action(detail=False, methods=["get"], url_path="notifications")
     def my_notifications(self, request):
         notifications = ConnectionNotification.objects.filter(
             user=request.user
-        ).select_related("actor", "connection_request", "connection_request__sender", "connection_request__receiver")
+        ).select_related(
+            "actor",
+            "connection_request",
+            "connection_request__sender",
+            "connection_request__receiver",
+        )
 
         return Response(ConnectionNotificationSerializer(notifications, many=True).data)
 
