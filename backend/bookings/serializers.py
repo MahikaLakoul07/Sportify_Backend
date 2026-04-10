@@ -66,9 +66,13 @@ class BookingCreateSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         request = self.context["request"]
 
-        booking_type = validated_data.get("booking_type", Booking.BookingType.CLOSED)
-        required_players = validated_data.get("required_players", 1)
-        payment_mode = validated_data.get("payment_mode", Booking.PaymentMode.PAY_DEPOSIT)
+        booking_type = validated_data.pop("booking_type", Booking.BookingType.CLOSED)
+        required_players = validated_data.pop("required_players", 1)
+        open_game_note = validated_data.pop("open_game_note", "")
+        payment_mode = validated_data.pop(
+            "payment_mode",
+            Booking.PaymentMode.PAY_DEPOSIT,
+        )
 
         with transaction.atomic():
             try:
@@ -81,6 +85,7 @@ class BookingCreateSerializer(serializers.ModelSerializer):
                     booking_type=booking_type,
                     current_players=1,
                     required_players=required_players if booking_type == Booking.BookingType.OPEN else 1,
+                    open_game_note=open_game_note if booking_type == Booking.BookingType.OPEN else "",
                     **validated_data,
                 )
                 return booking
