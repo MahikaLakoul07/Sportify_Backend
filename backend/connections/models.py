@@ -44,6 +44,7 @@ class ConnectionNotification(models.Model):
         REQUEST_SENT = "REQUEST_SENT", "Request Sent"
         REQUEST_ACCEPTED = "REQUEST_ACCEPTED", "Request Accepted"
         REQUEST_REJECTED = "REQUEST_REJECTED", "Request Rejected"
+        BOOKING_CANCELLED = "BOOKING_CANCELLED", "Booking Cancelled"
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -59,6 +60,8 @@ class ConnectionNotification(models.Model):
         ConnectionRequest,
         on_delete=models.CASCADE,
         related_name="notifications",
+        null=True,
+        blank=True,
     )
     notification_type = models.CharField(max_length=30, choices=Type.choices)
     message = models.CharField(max_length=255)

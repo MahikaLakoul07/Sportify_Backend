@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.db import models
+from django.db.models import Q
 from django.utils import timezone
 from grounds.models import Ground
 
@@ -101,7 +102,8 @@ class Booking(models.Model):
         constraints = [
             models.UniqueConstraint(
                 fields=["ground", "date", "start_time", "end_time"],
-                name="uniq_booking_slot",
+                condition=~Q(status="CANCELLED"),
+                name="uniq_active_booking_slot",
             ),
         ]
 
