@@ -5,139 +5,48 @@ from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from authapp.models import User
 from chat.utils import get_or_create_direct_chat
 from .models import ConnectionNotification, ConnectionRequest
 from .serializers import (
     ConnectionNotificationSerializer,
     ConnectionRequestSerializer,
+    SendConnectionRequestSerializer,
     SimplePlayerSerializer,
 )
+from .utils import create_notification
 
 
 class ConnectionViewSet(viewsets.ViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
-    def _create_notification(self, *, user, actor, connection_request, notification_type, message):
-        ConnectionNotification.objects.create(
-            user=user,
-            actor=actor,
-            connection_request=connection_request,
-            notification_type=notification_type,
-            message=message,
-        )
-
     @action(detail=False, methods=["post"], url_path="request")
     @transaction.atomic
     def send_request(self, request):
-        receiver_id = request.data.get("receiver_id")
-
-        if not receiver_id:
-            return Response(
-                {"detail": "receiver_id is required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        try:
-            receiver = User.objects.get(pk=receiver_id)
-        except User.DoesNotExist:
-            return Response(
-                {"detail": "Player not found."},
-                status=status.HTTP_404_NOT_FOUND,
-            )
-
-        if receiver.pk == request.user.pk:
-            return Response(
-                {"detail": "You cannot send a connection request to yourself."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Already connected in either direction
-        accepted_request = ConnectionRequest.objects.filter(
-            status=ConnectionRequest.Status.ACCEPTED
-        ).filter(
-            Q(sender=request.user, receiver=receiver) |
-            Q(sender=receiver, receiver=request.user)
-        ).order_by("-created_at").first()
-
-        if accepted_request:
-            return Response(
-                ConnectionRequestSerializer(accepted_request).data,
-                status=status.HTTP_200_OK,
-            )
-
-        # Same direction existing request
-        existing_same = ConnectionRequest.objects.filter(
-            sender=request.user,
-            receiver=receiver,
-        ).order_by("-created_at").first()
-
-        if existing_same:
-            if existing_same.status == ConnectionRequest.Status.PENDING:
-                return Response(
-                    ConnectionRequestSerializer(existing_same).data,
-                    status=status.HTTP_200_OK,
-                )
-
-            if existing_same.status == ConnectionRequest.Status.REJECTED:
-                existing_same.status = ConnectionRequest.Status.PENDING
-                existing_same.responded_at = None
-                existing_same.save(update_fields=["status", "responded_at"])
-
-                self._create_notification(
-                    user=receiver,
-                    actor=request.user,
-                    connection_request=existing_same,
-                    notification_type=ConnectionNotification.Type.REQUEST_SENT,
-                    message=f"{request.user.username} has sent you a connection request.",
-                )
-
-                return Response(
-                    ConnectionRequestSerializer(existing_same).data,
-                    status=status.HTTP_200_OK,
-                )
-
-        # Reverse direction existing request
-        existing_reverse = ConnectionRequest.objects.filter(
-            sender=receiver,
-            receiver=request.user,
-        ).order_by("-created_at").first()
-
-        if existing_reverse:
-            if existing_reverse.status == ConnectionRequest.Status.PENDING:
-                existing_reverse.status = ConnectionRequest.Status.ACCEPTED
-                existing_reverse.responded_at = timezone.now()
-                existing_reverse.save(update_fields=["status", "responded_at"])
-
-                get_or_create_direct_chat(existing_reverse.sender, existing_reverse.receiver)
-
-                self._create_notification(
-                    user=existing_reverse.sender,
-                    actor=request.user,
-                    connection_request=existing_reverse,
-                    notification_type=ConnectionNotification.Type.REQUEST_ACCEPTED,
-                    message=f"{request.user.username} accepted your connection request.",
-                )
-
-                return Response(
-                    ConnectionRequestSerializer(existing_reverse).data,
-                    status=status.HTTP_200_OK,
-                )
-
-        # Fresh request
-        connection_request = ConnectionRequest.objects.create(
-            sender=request.user,
-            receiver=receiver,
-            status=ConnectionRequest.Status.PENDING,
+        serializer = SendConnectionRequestSerializer(
+            data=request.data,
+            context={"request": request},
         )
+        serializer.is_valid(raise_exception=True)
+        connection_request = serializer.save()
 
-        self._create_notification(
-            user=receiver,
-            actor=request.user,
-            connection_request=connection_request,
-            notification_type=ConnectionNotification.Type.REQUEST_SENT,
-            message=f"{request.user.username} has sent you a connection request.",
-        )
+        if connection_request.status == ConnectionRequest.Status.ACCEPTED:
+            get_or_create_direct_chat(connection_request.sender, connection_request.receiver)
+
+            create_notification(
+                user=connection_request.sender,
+                actor=request.user,
+                connection_request=connection_request,
+                notification_type=ConnectionNotification.Type.REQUEST_ACCEPTED,
+                message=f"{request.user.username} accepted your connection request.",
+            )
+        else:
+            create_notification(
+                user=connection_request.receiver,
+                actor=request.user,
+                connection_request=connection_request,
+                notification_type=ConnectionNotification.Type.REQUEST_SENT,
+                message=f"{request.user.username} has sent you a connection request.",
+            )
 
         return Response(
             ConnectionRequestSerializer(connection_request).data,
@@ -185,7 +94,7 @@ class ConnectionViewSet(viewsets.ViewSet):
 
         get_or_create_direct_chat(connection_request.sender, connection_request.receiver)
 
-        self._create_notification(
+        create_notification(
             user=connection_request.sender,
             actor=request.user,
             connection_request=connection_request,
@@ -216,7 +125,7 @@ class ConnectionViewSet(viewsets.ViewSet):
         connection_request.responded_at = timezone.now()
         connection_request.save(update_fields=["status", "responded_at"])
 
-        self._create_notification(
+        create_notification(
             user=connection_request.sender,
             actor=request.user,
             connection_request=connection_request,
@@ -300,5 +209,9 @@ class ConnectionViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=["post"], url_path="notifications/read-all")
     def mark_all_notifications_read(self, request):
-        ConnectionNotification.objects.filter(user=request.user, is_read=False).update(is_read=True)
+        ConnectionNotification.objects.filter(
+            user=request.user,
+            is_read=False
+        ).update(is_read=True)
+
         return Response({"detail": "All notifications marked as read."})

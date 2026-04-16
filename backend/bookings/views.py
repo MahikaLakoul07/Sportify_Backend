@@ -1,4 +1,4 @@
-# backend/bookings/views.py
+from datetime import datetime, timedelta
 
 from django.utils import timezone
 from rest_framework import permissions, status, viewsets
@@ -17,6 +17,8 @@ from chat.utils import (
     create_temporary_chat_for_booking,
     deactivate_booking_chat,
 )
+from connections.models import ConnectionNotification
+from connections.utils import create_notification
 
 
 class BookingViewSet(viewsets.ModelViewSet):
@@ -25,7 +27,7 @@ class BookingViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         base_qs = (
             Booking.objects
-            .select_related("ground", "created_by", "chat_group")
+            .select_related("ground", "created_by", "chat_group", "ground__owner")
             .order_by("-created_at")
         )
 
@@ -139,6 +141,73 @@ class BookingViewSet(viewsets.ModelViewSet):
         data["group_chat_id"] = getattr(group, "id", None)
 
         return Response(data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["post"], url_path="cancel")
+    def cancel_booking(self, request, pk=None):
+        booking = self.get_object()
+
+        if booking.player_id != request.user.pk and booking.created_by_id != request.user.pk:
+            return Response(
+                {"detail": "You can only cancel your own booking."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if booking.status == Booking.Status.CANCELLED:
+            return Response(
+                {"detail": "Booking is already cancelled."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if booking.status not in {Booking.Status.PENDING, Booking.Status.BOOKED}:
+            return Response(
+                {"detail": "Only active bookings can be cancelled."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        booking_start = timezone.make_aware(
+            datetime.combine(booking.date, booking.start_time),
+            timezone.get_current_timezone(),
+        )
+
+        if booking_start <= timezone.now():
+            return Response(
+                {"detail": "Past or ongoing bookings cannot be cancelled."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if booking_start - timezone.now() <= timedelta(hours=3):
+            return Response(
+                {"detail": "Booking cannot be cancelled within 3 hours of the game start time."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        booking.status = Booking.Status.CANCELLED
+        booking.save(update_fields=["status"])
+
+        if booking.booking_type == Booking.BookingType.OPEN and booking.chat_group_id:
+            deactivate_booking_chat(booking)
+
+        owner = getattr(booking.ground, "owner", None)
+        if owner and owner.pk != request.user.pk:
+            create_notification(
+                user=owner,
+                actor=request.user,
+                notification_type=ConnectionNotification.Type.BOOKING_CANCELLED,
+                message=(
+                    f"{request.user.username} cancelled the booking for "
+                    f"{booking.ground.name} on {booking.date} "
+                    f"from {booking.start_time.strftime('%H:%M')} to {booking.end_time.strftime('%H:%M')}."
+                ),
+            )
+
+        return Response(
+            {
+                "detail": "Booking cancelled successfully.",
+                "booking_id": booking.id,
+                "status": booking.status,
+            },
+            status=status.HTTP_200_OK,
+        )
 
     @action(detail=True, methods=["post"], url_path="deactivate-chat")
     def deactivate_chat(self, request, pk=None):
