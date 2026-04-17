@@ -27,11 +27,18 @@ class BookingViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         base_qs = (
             Booking.objects
-            .select_related("ground", "created_by", "chat_group", "ground__owner")
+            .select_related("ground", "created_by", "chat_group", "ground__owner", "player")
             .order_by("-created_at")
         )
 
-        if self.action in {"open_games", "retrieve", "join", "deactivate_chat"}:
+        if self.action in {
+            "open_games",
+            "retrieve",
+            "join",
+            "deactivate_chat",
+            "owner_bookings",
+            "owner_ground_bookings",
+        }:
             return base_qs
 
         return base_qs.filter(player=self.request.user)
@@ -59,6 +66,26 @@ class BookingViewSet(viewsets.ModelViewSet):
         serializer = BookingSerializer(qs, many=True, context={"request": request})
         return Response(serializer.data)
 
+    @action(detail=False, methods=["get"], url_path="owner-bookings")
+    def owner_bookings(self, request):
+        user_role = getattr(request.user, "role", None) or getattr(request.user, "user_type", None)
+
+        if str(user_role).upper() != "OWNER":
+            return Response(
+                {"detail": "Only owners can view owner bookings."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        bookings = (
+            Booking.objects
+            .select_related("ground", "player", "created_by", "ground__owner")
+            .filter(ground__owner=request.user)
+            .order_by("-date", "-start_time", "-created_at")
+        )
+
+        serializer = BookingSerializer(bookings, many=True, context={"request": request})
+        return Response(serializer.data)
+
     def retrieve(self, request, *args, **kwargs):
         booking = self.get_object()
 
@@ -70,8 +97,9 @@ class BookingViewSet(viewsets.ModelViewSet):
             booking.booking_type == Booking.BookingType.OPEN
             and booking.status == Booking.Status.BOOKED
         )
+        is_ground_owner = getattr(booking.ground, "owner_id", None) == request.user.pk
 
-        if not (is_own_booking or is_public_open_game):
+        if not (is_own_booking or is_public_open_game or is_ground_owner):
             return Response(
                 {"detail": "Not allowed."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -91,6 +119,20 @@ class BookingViewSet(viewsets.ModelViewSet):
         if str(booking.booking_type).upper() == "OPEN":
             create_temporary_chat_for_booking(booking)
             booking.refresh_from_db()
+
+        owner = getattr(booking.ground, "owner", None)
+        if owner and owner.pk != request.user.pk:
+            create_notification(
+                user=owner,
+                actor=request.user,
+                notification_type=ConnectionNotification.Type.BOOKING_REQUEST,
+                message=(
+                    f"{request.user.username} booked {booking.ground.name} on "
+                    f"{booking.date} from "
+                    f"{booking.start_time.strftime('%H:%M')} to "
+                    f"{booking.end_time.strftime('%H:%M')}."
+                ),
+            )
 
         return Response(
             BookingSerializer(booking, context={"request": request}).data,
@@ -243,3 +285,26 @@ class BookingViewSet(viewsets.ModelViewSet):
             BookingSerializer(booking, context={"request": request}).data,
             status=status.HTTP_201_CREATED,
         )
+
+    @action(detail=False, methods=["get"], url_path=r"owner/grounds/(?P<ground_id>\d+)/bookings")
+    def owner_ground_bookings(self, request, ground_id=None):
+        user_role = getattr(request.user, "role", None) or getattr(request.user, "user_type", None)
+
+        if str(user_role).upper() != "OWNER":
+            return Response(
+                {"detail": "Only owners can view ground bookings."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        bookings = (
+            Booking.objects
+            .select_related("ground", "player", "created_by")
+            .filter(
+                ground_id=ground_id,
+                ground__owner=request.user,
+            )
+            .order_by("-date", "-start_time", "-created_at")
+        )
+
+        serializer = BookingSerializer(bookings, many=True, context={"request": request})
+        return Response(serializer.data)

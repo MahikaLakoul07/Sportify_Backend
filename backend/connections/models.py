@@ -44,6 +44,7 @@ class ConnectionNotification(models.Model):
         REQUEST_SENT = "REQUEST_SENT", "Request Sent"
         REQUEST_ACCEPTED = "REQUEST_ACCEPTED", "Request Accepted"
         REQUEST_REJECTED = "REQUEST_REJECTED", "Request Rejected"
+        BOOKING_REQUEST = "BOOKING_REQUEST", "Booking Request"
         BOOKING_CANCELLED = "BOOKING_CANCELLED", "Booking Cancelled"
 
     user = models.ForeignKey(
