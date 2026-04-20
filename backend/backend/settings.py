@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 # Base directory
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Force-load .env from project root (same level as manage.py)
+# Load .env
 load_dotenv(BASE_DIR / ".env")
 
 # Core settings
@@ -21,6 +21,7 @@ ALLOWED_HOSTS = [h.strip() for h in os.getenv("DJANGO_ALLOWED_HOSTS", "127.0.0.1
 
 PAYMENT_MODE = os.getenv("PAYMENT_MODE", "esewa")
 
+# Applications
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
@@ -43,6 +44,7 @@ INSTALLED_APPS = [
     "chat",
 ]
 
+# Middleware
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
@@ -56,6 +58,7 @@ MIDDLEWARE = [
 
 ROOT_URLCONF = "backend.urls"
 
+# Templates
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
@@ -74,6 +77,7 @@ TEMPLATES = [
 WSGI_APPLICATION = "backend.wsgi.application"
 ASGI_APPLICATION = "backend.asgi.application"
 
+# Database
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
@@ -87,6 +91,7 @@ DATABASES = {
 
 AUTH_USER_MODEL = "authapp.User"
 
+# DRF + JWT
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",
@@ -100,40 +105,33 @@ SIMPLE_JWT = {
     "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
 }
 
+# CORS
 CORS_ALLOW_ALL_ORIGINS = True
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-]
 CORS_ALLOW_CREDENTIALS = True
 
+# Password validation
 AUTH_PASSWORD_VALIDATORS = [
-    {
-        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator",
-    },
-    {
-        "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
-    },
-    {
-        "NAME": "django.contrib.auth.password_validation.CommonPasswordValidator",
-    },
-    {
-        "NAME": "django.contrib.auth.password_validation.NumericPasswordValidator",
-    },
+    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
+    {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
+    {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
 ]
 
+# Localization
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"
 USE_I18N = True
 USE_TZ = True
 
-STATIC_URL = "static/"
+# FIXED STATIC FILES (IMPORTANT)
+STATIC_URL = "/static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
 
+# Media
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
+# Email
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 EMAIL_HOST = "smtp.gmail.com"
 EMAIL_PORT = 587
@@ -145,7 +143,7 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # eSewa config
 ESEWA_PRODUCT_CODE = os.getenv("ESEWA_PRODUCT_CODE", "EPAYTEST")
-ESEWA_SECRET_KEY = os.getenv("ESEWA_SECRET_KEY", "8gBm/:&EnhH.1/q")
+ESEWA_SECRET_KEY = os.getenv("ESEWA_SECRET_KEY", "")
 ESEWA_FORM_URL = os.getenv(
     "ESEWA_FORM_URL",
     "https://rc-epay.esewa.com.np/api/epay/main/v2/form",
@@ -162,16 +160,12 @@ ESEWA_FAILURE_URL = os.getenv(
     "ESEWA_FAILURE_URL",
     "http://127.0.0.1:8000/api/payments/esewa/failure/",
 )
+
 FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://localhost:5173")
 
+# Channels
 CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels.layers.InMemoryChannelLayer",
     },
 }
-
-print("PAYMENT_MODE =", repr(PAYMENT_MODE))
-print("ESEWA_FORM_URL =", repr(ESEWA_FORM_URL))
-print("ESEWA_SUCCESS_URL =", repr(ESEWA_SUCCESS_URL))
-print("ESEWA_FAILURE_URL =", repr(ESEWA_FAILURE_URL))
-print("FRONTEND_BASE_URL =", repr(FRONTEND_BASE_URL))
