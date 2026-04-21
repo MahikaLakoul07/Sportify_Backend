@@ -155,7 +155,7 @@ def create_booking_from_intent(transaction_uuid: str, transaction_code: str = ""
         print("========== CREATE BOOKING FROM INTENT END ==========\n")
         return None, "create_failed"
 
-    # IMPORTANT: create temporary group chat for OPEN bookings
+    # Create temporary group chat for OPEN bookings
     try:
         if str(booking.booking_type).upper() == "OPEN":
             print("OPEN booking detected -> creating temporary chat")
