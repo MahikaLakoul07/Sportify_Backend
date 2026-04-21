@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Load .env
-load_dotenv(BASE_DIR / ".env")
+load_dotenv(BASE_DIR / "backend" / ".env")
 
 # Core settings
 SECRET_KEY = os.getenv("SECRET_KEY", os.getenv("DJANGO_SECRET_KEY", "django-insecure-dev-key"))
