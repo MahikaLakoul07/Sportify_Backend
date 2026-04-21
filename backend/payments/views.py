@@ -13,7 +13,9 @@ from rest_framework import permissions
 from bookings.models import Booking
 from grounds.models import Ground
 from grounds.slot_constants import FIXED_SLOTS
-from chat.utils import create_temporary_chat_for_booking  # <-- IMPORTANT
+from chat.utils import create_temporary_chat_for_booking
+from connections.models import ConnectionNotification
+from connections.utils import create_notification
 
 from .utils import (
     esewa_make_signature,
@@ -50,10 +52,7 @@ def payment_cache_key(tx_uuid: str) -> str:
 
 def normalize_amount(value) -> str:
     amt = Decimal(str(value)).quantize(Decimal("1.00"))
-    s = format(amt, "f")
-    if s.endswith(".00"):
-        return str(int(amt))
-    return s
+    return format(amt, "f")
 
 
 def create_booking_from_intent(transaction_uuid: str, transaction_code: str = "", paid_amount=None):
@@ -117,9 +116,7 @@ def create_booking_from_intent(transaction_uuid: str, transaction_code: str = ""
     if existing:
         print("Booking already exists with transaction_uuid:", transaction_uuid)
 
-        # Ensure chat exists if this is an OPEN booking
         if str(existing.booking_type).upper() == "OPEN":
-            print("Existing booking is OPEN -> ensuring temporary chat exists")
             create_temporary_chat_for_booking(existing)
 
         cache.delete(payment_cache_key(transaction_uuid))
@@ -155,16 +152,38 @@ def create_booking_from_intent(transaction_uuid: str, transaction_code: str = ""
         print("========== CREATE BOOKING FROM INTENT END ==========\n")
         return None, "create_failed"
 
-    # Create temporary group chat for OPEN bookings
     try:
         if str(booking.booking_type).upper() == "OPEN":
-            print("OPEN booking detected -> creating temporary chat")
-            group = create_temporary_chat_for_booking(booking)
-            print("Temporary chat created -> group.id:", group.id)
-        else:
-            print("Booking is not OPEN -> no temp chat needed")
+            create_temporary_chat_for_booking(booking)
     except Exception as e:
         print("TEMP CHAT CREATE ERROR:", str(e))
+
+    owner = getattr(booking.ground, "owner", None)
+    player = getattr(booking, "player", None)
+
+    if owner:
+        create_notification(
+            user=owner,
+            actor=player or owner,
+            notification_type=ConnectionNotification.Type.BOOKING_CONFIRMED,
+            message=(
+                f"Booking confirmed for {booking.ground.name} on {booking.date} "
+                f"from {booking.start_time.strftime('%H:%M')} to "
+                f"{booking.end_time.strftime('%H:%M')}."
+            ),
+        )
+
+    if player:
+        create_notification(
+            user=player,
+            actor=player,
+            notification_type=ConnectionNotification.Type.BOOKING_CONFIRMED,
+            message=(
+                f"Your booking for {booking.ground.name} on {booking.date} "
+                f"from {booking.start_time.strftime('%H:%M')} to "
+                f"{booking.end_time.strftime('%H:%M')} has been confirmed."
+            ),
+        )
 
     cache.delete(payment_cache_key(transaction_uuid))
     print("========== CREATE BOOKING FROM INTENT END ==========\n")
@@ -244,6 +263,9 @@ class EsewaInitiateView(APIView):
 
         transaction_uuid = uuid.uuid4().hex[:20]
         total_amount_str = normalize_amount(total_amount)
+        product_code = str(settings.ESEWA_PRODUCT_CODE).strip()
+        secret_key = str(settings.ESEWA_SECRET_KEY).strip()
+        signed_field_names = "total_amount,transaction_uuid,product_code"
 
         cache.set(
             payment_cache_key(transaction_uuid),
@@ -263,34 +285,43 @@ class EsewaInitiateView(APIView):
             timeout=CACHE_TIMEOUT_SECONDS,
         )
 
-        payment_mode_setting = getattr(settings, "PAYMENT_MODE", "esewa").lower()
-
-        product_code = settings.ESEWA_PRODUCT_CODE
-        signed_field_names = "total_amount,transaction_uuid,product_code"
-
         signature = esewa_make_signature(
-            secret_key=settings.ESEWA_SECRET_KEY,
-            total_amount=total_amount_str,
-            transaction_uuid=transaction_uuid,
+            secret_key=secret_key,
+            total_amount=str(total_amount_str).strip(),
+            transaction_uuid=str(transaction_uuid).strip(),
             product_code=product_code,
         )
 
         fields = {
-            "amount": total_amount_str,
+            "amount": str(total_amount_str).strip(),
             "tax_amount": "0",
-            "total_amount": total_amount_str,
-            "transaction_uuid": transaction_uuid,
+            "total_amount": str(total_amount_str).strip(),
+            "transaction_uuid": str(transaction_uuid).strip(),
             "product_code": product_code,
             "product_service_charge": "0",
             "product_delivery_charge": "0",
-            "success_url": settings.ESEWA_SUCCESS_URL,
-            "failure_url": settings.ESEWA_FAILURE_URL,
+            "success_url": str(settings.ESEWA_SUCCESS_URL).strip(),
+            "failure_url": str(settings.ESEWA_FAILURE_URL).strip(),
             "signed_field_names": signed_field_names,
-            "signature": signature,
+            "signature": str(signature).strip(),
         }
 
         print("ESEWA ACTION URL:", settings.ESEWA_FORM_URL)
+        print("ESEWA PRODUCT CODE:", repr(product_code))
+        print("ESEWA SECRET KEY:", repr(secret_key))
+        print("ESEWA TOTAL AMOUNT:", total_amount_str)
+        print("ESEWA TX UUID:", transaction_uuid)
+        print("ESEWA SIGNED FIELD NAMES:", signed_field_names)
+        print(
+            "ESEWA SIGN STRING:",
+            f"total_amount={str(total_amount_str).strip()},transaction_uuid={str(transaction_uuid).strip()},product_code={product_code}"
+        )
+        print("ESEWA SIGNATURE:", signature)
         print("ESEWA FIELDS:", fields)
+
+        test_message = f"total_amount={str(total_amount_str).strip()},transaction_uuid={str(transaction_uuid).strip()},product_code={product_code}"
+        print("RAW SIGN MESSAGE REPR:", repr(test_message))
+        print("RAW SECRET REPR:", repr(secret_key))
 
         return Response(
             {
@@ -322,14 +353,18 @@ class EsewaSuccessView(APIView):
                 f"{settings.FRONTEND_BASE_URL}/mybookings?payment=failure"
             )
 
+        secret_key = str(settings.ESEWA_SECRET_KEY).strip()
         received_signature = payload.get("signature")
         expected_signature = esewa_make_signature_from_signed_fields(
-            settings.ESEWA_SECRET_KEY,
+            secret_key,
             payload
         )
 
         if received_signature != expected_signature:
             print("ESEWA SIGNATURE MISMATCH")
+            print("RECEIVED SIGNATURE:", received_signature)
+            print("EXPECTED SIGNATURE:", expected_signature)
+            print("SIGNED FIELD NAMES:", payload.get("signed_field_names"))
             return HttpResponseRedirect(
                 f"{settings.FRONTEND_BASE_URL}/mybookings?payment=failure"
             )
